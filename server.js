@@ -189,15 +189,19 @@ function advanceStage(){
   broadcastState();
 }
 
+// ----------------------------------------------------
+// Evaluate winners and finish the hand
+// ----------------------------------------------------
 function finishHand() {
   collectBetsToPot();
   const alive = STATE.players.filter(p => p.inHand && !p.folded);
 
   if (alive.length === 1) {
+    // Only one player left, they win the entire pot
     alive[0].stack += STATE.pot;
     logEvent({ event: 'win_pot', player: alive[0], action: 'win', amount: STATE.pot });
   } else if (alive.length > 1) {
-    // Evaluate each player's best 7-card hand
+    // Multiple players still in — use pokersolver to evaluate hands
     const results = alive.map(p => {
       const allCards = [...STATE.community, ...p.cards];
       const hand = Hand.solve(allCards);
@@ -224,104 +228,179 @@ function finishHand() {
   broadcastState();
 }
 
-
-  STATE.pot = 0;
-  setTimeout(startHand, 1500);
-  broadcastState();
-}
-
-
 // ----------------------------------------------------
 // Action Handling
 // ----------------------------------------------------
-function handleAction(socket,{action,amount}){
-  const idx=playerIndexBySocket(socket.id); if(idx===-1)return;
-  if(idx!==STATE.currentPlayerIdx)return;
-  const p=STATE.players[idx]; if(!p.inHand||p.folded)return;
-  const toCall=Math.max(...STATE.players.map(pl=>pl.bet))-p.bet;
+function handleAction(socket, { action, amount }) {
+  const idx = playerIndexBySocket(socket.id);
+  if (idx === -1) return;
+  if (idx !== STATE.currentPlayerIdx) return;
 
-  if(action==='fold'){
-    p.folded=true;
-    logEvent({event:'player_action',player:p,action:'fold',amount:0});
+  const p = STATE.players[idx];
+  if (!p.inHand || p.folded) return;
+
+  const toCall = Math.max(...STATE.players.map(pl => pl.bet)) - p.bet;
+
+  if (action === 'fold') {
+    p.folded = true;
+    logEvent({ event: 'player_action', player: p, action: 'fold', amount: 0 });
     turnRotateOrAdvance();
-  } else if(action==='check'){
-    if(toCall===0){
-      logEvent({event:'player_action',player:p,action:'check',amount:0});
+  } else if (action === 'check') {
+    if (toCall === 0) {
+      logEvent({ event: 'player_action', player: p, action: 'check', amount: 0 });
       turnRotateOrAdvance();
     }
-  } else if(action==='call'){
-    const callAmt=Math.min(toCall,p.stack);
-    p.stack-=callAmt; p.bet+=callAmt;
-    logEvent({event:'player_action',player:p,action:'call',amount:callAmt});
+  } else if (action === 'call') {
+    const callAmt = Math.min(toCall, p.stack);
+    p.stack -= callAmt;
+    p.bet += callAmt;
+    logEvent({ event: 'player_action', player: p, action: 'call', amount: callAmt });
     turnRotateOrAdvance();
-  } else if(action==='bet'||action==='raise'){
-    const minRaise=Math.max(STATE.minRaiseTo,BIG_BLIND);
-    const betAmt=Math.max(minRaise,Number(amount||0));
-    if(betAmt<=0)return;
-    const needed=toCall+betAmt;
-    const pay=Math.min(needed,p.stack);
-    p.stack-=pay; p.bet+=pay;
-    STATE.minRaiseTo=betAmt;
-    STATE.hasBetOrRaise=true;
-    STATE.lastRaiserIdx=idx;
-    logEvent({event:'player_action',player:p,action:(toCall>0?'raise':'bet'),amount:pay});
-    STATE.currentPlayerIdx=nextActivePlayer(idx);
+  } else if (action === 'bet' || action === 'raise') {
+    const minRaise = Math.max(STATE.minRaiseTo, BIG_BLIND);
+    const betAmt = Math.max(minRaise, Number(amount || 0));
+    if (betAmt <= 0) return;
+
+    const needed = toCall + betAmt;
+    const pay = Math.min(needed, p.stack);
+    p.stack -= pay;
+    p.bet += pay;
+    STATE.minRaiseTo = betAmt;
+    STATE.hasBetOrRaise = true;
+    STATE.lastRaiserIdx = idx;
+
+    logEvent({
+      event: 'player_action',
+      player: p,
+      action: toCall > 0 ? 'raise' : 'bet',
+      amount: pay
+    });
+
+    STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
   }
 }
 
-function turnRotateOrAdvance(){
-  const alive=STATE.players.filter(pp=>pp.inHand&&!pp.folded);
-  if(alive.length<=1){STATE.stage='showdown';finishHand();return;}
-  const nextIdx=nextActivePlayer(STATE.currentPlayerIdx);
-  STATE.currentPlayerIdx=nextIdx;
-  if(!STATE.hasBetOrRaise){
-    if(STATE.currentPlayerIdx===STATE.roundFirstIdx){advanceStage();return;}
-  } else {
-    if(STATE.currentPlayerIdx===STATE.lastRaiserIdx){advanceStage();return;}
+// ----------------------------------------------------
+// Turn rotation & stage advance
+// ----------------------------------------------------
+function turnRotateOrAdvance() {
+  const alive = STATE.players.filter(pp => pp.inHand && !pp.folded);
+  if (alive.length <= 1) {
+    STATE.stage = 'showdown';
+    finishHand();
+    return;
   }
+
+  const nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
+  STATE.currentPlayerIdx = nextIdx;
+
+  if (!STATE.hasBetOrRaise) {
+    if (STATE.currentPlayerIdx === STATE.roundFirstIdx) {
+      advanceStage();
+      return;
+    }
+  } else {
+    if (STATE.currentPlayerIdx === STATE.lastRaiserIdx) {
+      advanceStage();
+      return;
+    }
+  }
+
   broadcastState();
 }
 
 // ----------------------------------------------------
-// Socket.IO connections
+// Socket.IO setup
 // ----------------------------------------------------
-io.on('connection',(socket)=>{
-  socket.on('host:join',()=>{socket.join('host');if(!STATE.actionLogFile)initLogFile();socket.emit('host:welcome',{ok:true});broadcastState();});
-  socket.on('player:join',({name})=>{
-    if(!STATE.tableOpen||STATE.players.length>=TABLE_MAX||STATE.hasStarted){
-      socket.emit('player:reject',{reason:'Table full or game started'});return;}
-    const seat=firstOpenSeat(); if(seat===-1){socket.emit('player:reject',{reason:'No seats'});return;}
-    const player={id:uuidv4(),name:String(name||`Player${STATE.players.length+1}`).slice(0,18),
-      socketId:socket.id,seat,stack:STARTING_STACK,inHand:true,folded:false,bet:0,cards:[]};
-    STATE.players.push(player); logEvent({event:'player_join',player}); broadcastState();
-    socket.emit('player:accepted',{id:player.id});
+io.on('connection', (socket) => {
+  socket.on('host:join', () => {
+    socket.join('host');
+    if (!STATE.actionLogFile) initLogFile();
+    socket.emit('host:welcome', { ok: true });
+    broadcastState();
   });
-  socket.on('player:action',payload=>handleAction(socket,payload));
-  socket.on('host:start',()=>{if(STATE.players.length>=2&&!STATE.hasStarted){STATE.tableOpen=false;startHand();}});
-  socket.on('host:nextHandNow',()=>{if(STATE.stage!=='lobby'){STATE.stage='showdown';finishHand();}});
-  socket.on('disconnect',()=>{const idx=playerIndexBySocket(socket.id);if(idx!==-1){const p=STATE.players[idx];logEvent({event:'player_disconnect',player:p});p.inHand=false;p.folded=true;p.socketId=null;broadcastState();}});
+
+  socket.on('player:join', ({ name }) => {
+    if (!STATE.tableOpen || STATE.players.length >= TABLE_MAX || STATE.hasStarted) {
+      socket.emit('player:reject', { reason: 'Table full or game started' });
+      return;
+    }
+
+    const seat = firstOpenSeat();
+    if (seat === -1) {
+      socket.emit('player:reject', { reason: 'No seats available' });
+      return;
+    }
+
+    const player = {
+      id: uuidv4(),
+      name: String(name || `Player${STATE.players.length + 1}`).slice(0, 18),
+      socketId: socket.id,
+      seat,
+      stack: STARTING_STACK,
+      inHand: true,
+      folded: false,
+      bet: 0,
+      cards: []
+    };
+
+    STATE.players.push(player);
+    logEvent({ event: 'player_join', player });
+    broadcastState();
+    socket.emit('player:accepted', { id: player.id });
+  });
+
+  socket.on('player:action', (payload) => handleAction(socket, payload));
+  socket.on('host:start', () => {
+    if (STATE.players.length >= 2 && !STATE.hasStarted) {
+      STATE.tableOpen = false;
+      startHand();
+    }
+  });
+
+  socket.on('host:nextHandNow', () => {
+    if (STATE.stage !== 'lobby') {
+      STATE.stage = 'showdown';
+      finishHand();
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const idx = playerIndexBySocket(socket.id);
+    if (idx !== -1) {
+      const p = STATE.players[idx];
+      logEvent({ event: 'player_disconnect', player: p });
+      p.inHand = false;
+      p.folded = true;
+      p.socketId = null;
+      broadcastState();
+    }
+  });
 });
 
 // ----------------------------------------------------
-// CSV Download Endpoint
+// CSV download route for host
 // ----------------------------------------------------
-app.get('/latest-log',(req,res)=>{
-  const dir=path.join(__dirname,'logs');
-  if(!fs.existsSync(dir))return res.status(404).send('No logs folder yet.');
-  const files=fs.readdirSync(dir)
-    .filter(f=>f.startsWith('actions-')&&f.endsWith('.csv'))
-    .map(f=>({name:f,time:fs.statSync(path.join(dir,f)).mtime}))
-    .sort((a,b)=>b.time-a.time);
-  if(!files.length)return res.status(404).send('No log files yet.');
-  const latest=files[0].name;
-  res.download(path.join(dir,latest),latest);
+app.get('/latest-log', (req, res) => {
+  const dir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(dir)) return res.status(404).send('No logs folder yet.');
+  const files = fs
+    .readdirSync(dir)
+    .filter(f => f.startsWith('actions-') && f.endsWith('.csv'))
+    .map(f => ({ name: f, time: fs.statSync(path.join(dir, f)).mtime }))
+    .sort((a, b) => b.time - a.time);
+
+  if (!files.length) return res.status(404).send('No log files yet.');
+  const latest = files[0].name;
+  res.download(path.join(dir, latest), latest);
 });
 
 // ----------------------------------------------------
-server.listen(PORT,()=>{
+// Server listener
+// ----------------------------------------------------
+server.listen(PORT, () => {
   console.log(`Poker table server listening on http://0.0.0.0:${PORT}`);
   console.log(`Host UI:   http://<server-ip>:${PORT}/host.html`);
   console.log(`Players:   http://<server-ip>:${PORT}/player.html`);
 });
-
