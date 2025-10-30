@@ -1,159 +1,94 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Texas Hold'em Player</title>
-  <script src="/socket.io/socket.io.js"></script>
-  <style>
-    body {
-      font-family: sans-serif;
-      background: #202020;
-      color: #fff;
-      margin: 0;
-      padding: 20px;
-    }
-    h2, h3 { color: #00ffaa; }
-    button {
-      padding: 6px 10px;
-      margin: 5px;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      background: #333;
-      color: #fff;
-      transition: 0.2s;
-    }
-    button:hover { background: #555; }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
+<script>
+  const socket = io();
+  const el = id => document.getElementById(id);
 
-    #main {
-      display: flex;
-      gap: 20px;
-    }
-    #state {
-      background: #111;
-      border: 1px solid #444;
-      padding: 10px;
-      min-height: 180px;
-      overflow-y: auto;
-      border-radius: 8px;
-    }
-    #playerList {
-      background: #111;
-      border: 1px solid #444;
-      padding: 10px;
-      width: 220px;
-      border-radius: 8px;
-    }
-    .playerBox {
-      padding: 6px;
-      margin: 4px 0;
-      border-radius: 6px;
-      border: 1px solid #333;
-    }
-    .active-player {
-      background: linear-gradient(90deg, #00ff88, #00cc66);
-      color: #000;
-      font-weight: bold;
-      animation: pulse 1s infinite alternate;
-    }
-    @keyframes pulse {
-      from { box-shadow: 0 0 5px #00ff88; }
-      to { box-shadow: 0 0 20px #00ff88; }
-    }
-  </style>
-</head>
+  let myId = null;
+  let latestState = null;
 
-<body>
-  <h2>Texas Hold'em – Player Interface</h2>
+  el('joinBtn').onclick = () => {
+    const name = el('name').value.trim() || 'Player';
+    socket.emit('player:join', { name });
+  };
 
-  <div id="joinSection">
-    <input id="name" placeholder="Enter your name" />
-    <button id="join">Join Table</button>
-  </div>
+  socket.on('player:accepted', ({ id }) => {
+    myId = id;
+    el('joinPanel').style.display = 'none';
+    el('gamePanel').style.display = 'block';
+  });
 
-  <div id="gameSection" style="display:none;">
-    <div id="main">
-      <div style="flex:1;">
-        <h3>Game Info</h3>
-        <div id="state"></div>
+  socket.on('player:reject', ({ reason }) => {
+    el('joinMsg').textContent = reason || 'Join failed.';
+  });
 
-        <div id="actions" style="margin-top:15px;">
-          <button id="foldBtn" onclick="act('fold')">Fold</button>
-          <button id="checkBtn" onclick="act('check')">Check</button>
-          <button id="callBtn" onclick="act('call')">Call</button>
-          <button id="raiseBtn" onclick="act('raise')">Raise</button>
-          <button id="betBtn" onclick="act('bet')">Bet</button>
+  socket.on('state:update', (s) => {
+    latestState = s;
+
+    el('handId').textContent = s.handId;
+    el('stage').textContent = s.stage;
+    el('pot').textContent = s.pot;
+    el('community').textContent = (s.community && s.community.length) ? s.community.join(' ') : '—';
+
+    const me = s.me;
+    if (me) {
+      el('me').textContent = `${me.name} (seat ${me.seat}) — Stack: ${me.stack}`;
+      el('myCards').textContent = me.cards && me.cards.length ? me.cards.join(' ') : '—';
+    }
+
+    const others = el('others');
+    others.innerHTML = '';
+    (s.others || []).forEach(o => {
+      const row = document.createElement('div');
+      const isActive = s.currentPlayerId === o.id; // ✅ highlight if it's their turn
+      row.className = 'player-row';
+      row.style.background = isActive ? 'rgba(0,255,0,0.2)' : '';
+      row.style.border = isActive ? '2px solid #0f0' : '1px solid #444';
+      row.innerHTML = `
+        <div><strong>${o.name}${o.isMe ? ' (You)' : ''}</strong>
+          <span class="small">[seat ${o.seat ?? '—'}]</span>
+          ${isActive ? '<span class="small" style="color:#0f0;"> ← Acting</span>' : ''}
         </div>
-      </div>
-
-      <div>
-        <h3>Players</h3>
-        <div id="playerList"></div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const socket = io();
-    let myId = null;
-
-    // Join table
-    document.getElementById('join').onclick = () => {
-      const name = document.getElementById('name').value.trim();
-      if (name) socket.emit('player:join', { name });
-    };
-
-    // Confirm join
-    socket.on('player:accepted', (data) => {
-      myId = data.id;
-      document.getElementById('joinSection').style.display = 'none';
-      document.getElementById('gameSection').style.display = 'block';
+        <div class="small">Stack: ${o.stack} • Bet: ${o.bet ?? 0} • ${o.inHand ? 'IN' : 'OUT'}</div>
+      `;
+      others.appendChild(row);
     });
 
-    // Main state updates
-    socket.on('state:update', (s) => {
-      // --- Update game info ---
-      document.getElementById('state').textContent =
-        JSON.stringify(s, null, 2);
+    // Enable actions only on your turn and if you're still in the hand
+    const myTurn = !!(s.currentPlayerId && s.me && s.currentPlayerId === s.me.id);
+    const iAmIn = me && me.inHand && !me.folded && me.stack >= 0;
+    const enable = (!!myTurn && !!iAmIn && (s.stage !== 'lobby' && s.stage !== 'showdown'));
 
-      const myTurn = s.currentPlayerId === myId;
-      const me = s.players.find(p => p.id === myId);
-      const myBet = me ? me.bet : 0;
+    el('foldBtn').disabled = !enable;
+    el('checkBtn').disabled = !enable;
+    el('callBtn').disabled = !enable;
+    el('raiseBtn').disabled = !enable;
 
-      // Compute current highest bet
-      const activeBets = s.players
-        .filter(p => p.inHand && !p.folded)
-        .map(p => p.bet);
-      const maxBet = activeBets.length > 0 ? Math.max(...activeBets) : 0;
-
-      // Show or hide action buttons
-      const actions = document.getElementById('actions');
-      actions.style.display = myTurn ? 'block' : 'none';
-
-      // Disable "Check" if you owe chips
-      const checkBtn = document.getElementById('checkBtn');
-      checkBtn.disabled = myBet < maxBet;
-      checkBtn.title = checkBtn.disabled
-        ? 'Cannot check – there is a bet to call'
-        : '';
-
-      // Highlight active player in sidebar
-      const playerList = document.getElementById('playerList');
-      playerList.innerHTML = s.players.map(p => {
-        const isTurn = s.currentPlayerId === p.id;
-        const folded = p.folded ? ' (folded)' : '';
-        const cls = isTurn ? 'playerBox active-player' : 'playerBox';
-        return `<div class="${cls}">
-                  ${p.name} — ${p.stack} chips${folded}
-                </div>`;
-      }).join('');
-    });
-
-    // Player performs an action
-    function act(a) {
-      socket.emit('player:action', { action: a });
+    // ✅ Disable "Check" if my bet < highest active bet
+    if (enable && me) {
+      const activeBets = s.players.filter(p => p.inHand && !p.folded).map(p => p.bet);
+      const maxBet = activeBets.length ? Math.max(...activeBets) : 0;
+      const myBet = me.bet || 0;
+      if (myBet < maxBet) {
+        el('checkBtn').disabled = true;
+        el('checkBtn').title = 'Cannot check – there is a bet to call';
+      } else {
+        el('checkBtn').title = '';
+      }
     }
-  </script>
-</body>
-</html>
+
+    el('hint').textContent = enable
+      ? `Your turn. Minimum raise to: ${s.minRaiseTo}`
+      : `Waiting for other players...`;
+  });
+
+  // Actions
+  el('foldBtn').onclick = () => socket.emit('player:action', { action: 'fold' });
+  el('checkBtn').onclick = () => socket.emit('player:action', { action: 'check' });
+  el('callBtn').onclick = () => socket.emit('player:action', { action: 'call' });
+  el('raiseBtn').onclick = () => {
+    const amt = Number(el('raiseAmt').value || 0);
+    if (!Number.isFinite(amt) || amt <= 0) return;
+    socket.emit('player:action', { action: 'raise', amount: amt });
+    el('raiseAmt').value = '';
+  };
+</script>
+
