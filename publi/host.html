@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Poker Host</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Texas Hold’em — Host</h1>
+    <p class="small">Share this URL with players: <span class="badge" id="joinUrl"></span></p>
+    <div class="row" style="margin-top:12px">
+      <div class="col">
+        <div class="table">
+          <div><span class="label">Hand</span> <span id="handId" class="badge">—</span></div>
+          <div><span class="label">Stage</span> <span id="stage" class="badge">lobby</span></div>
+          <div><span class="label">Pot</span> <span id="pot" class="badge">0</span></div>
+          <div><span class="label">Dealer</span> <span id="dealer" class="badge">—</span></div>
+          <div><span class="label">Acting</span> <span id="acting" class="badge">—</span></div>
+          <div><span class="label">Min Raise To</span> <span id="minRaise" class="badge">20</span></div>
+          <div><span class="label">Community</span> <div id="community" class="community">—</div></div>
+          <div>
+            <button id="startBtn">Start Game</button>
+            <button id="nextHandBtn">Force Next Hand</button>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <h3>Players</h3>
+        <div id="players" class="list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  socket.emit('host:join');
+
+  const joinUrl = `${location.protocol}//${location.host}/player.html`;
+  document.getElementById('joinUrl').textContent = joinUrl;
+
+  const el = id => document.getElementById(id);
+
+  socket.on('host:welcome', () => {});
+  socket.on('state:update', (s) => {
+    el('handId').textContent = s.handId;
+    el('stage').textContent = s.stage;
+    el('pot').textContent = s.pot;
+    el('dealer').textContent = s.dealerBtn;
+    el('acting').textContent = s.currentPlayerIdx;
+    el('minRaise').textContent = s.minRaiseTo;
+    el('community').textContent = s.community.length ? s.community.join(' ') : '—';
+
+    const list = el('players');
+    list.innerHTML = '';
+    s.players.forEach((p,i) => {
+      const row = document.createElement('div');
+      row.className = 'player-row';
+      row.innerHTML = `
+        <div>
+          <div><strong>${p.name}</strong> <span class="small">[seat ${p.seat}]</span></div>
+          <div class="small">Cards: <span class="cards">${p.cards.join(' ')||'—'}</span></div>
+        </div>
+        <div>
+          <div class="badge">Stack: ${p.stack}</div>
+          <div class="small">Bet: ${p.bet} • ${p.folded ? 'FOLDED' : (p.inHand?'IN HAND':'OUT')}</div>
+        </div>
+      `;
+      list.appendChild(row);
+    });
+  });
+
+  document.getElementById('startBtn').onclick = () => socket.emit('host:start');
+  document.getElementById('nextHandBtn').onclick = () => socket.emit('host:nextHandNow');
+</script>
+</body>
+</html>
