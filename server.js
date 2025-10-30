@@ -14,6 +14,23 @@ const PORT = process.env.PORT || 3000;
 
 // --- Static files
 app.use(express.static(path.join(__dirname, 'public')));
+// --- Serve the latest CSV log file to host
+app.get('/latest-log', (req, res) => {
+  const dir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(dir)) return res.status(404).send('No logs folder yet.');
+
+  const files = fs.readdirSync(dir)
+    .filter(f => f.startsWith('actions-') && f.endsWith('.csv'))
+    .map(f => ({ name: f, time: fs.statSync(path.join(dir, f)).mtime }))
+    .sort((a, b) => b.time - a.time);
+
+  if (!files.length) return res.status(404).send('No log files yet.');
+
+  const latest = files[0].name;
+  const filePath = path.join(dir, latest);
+  res.download(filePath, latest);  // prompts browser to download
+});
+
 
 // --- Simple in-memory game state (single table)
 const TABLE_MAX = 6;
@@ -34,6 +51,10 @@ const STATE = {
   tableOpen: true,
   actionLogFile: null, // CSV file path
   hasStarted: false
+  roundFirstIdx: -1,
+  hasBetOrRaise: false,
+  lastRaiserIdx: -1,
+
 };
 
 // --- Utility: create/append CSV log
@@ -240,6 +261,10 @@ function startHand(){
 
   // First to act preflop (UTG)
   STATE.currentPlayerIdx = (STATE.dealerBtn + 3) % STATE.players.length;
+  STATE.roundFirstIdx = STATE.currentPlayerIdx; // UTG preflop
+  STATE.hasBetOrRaise = false;
+  STATE.lastRaiserIdx = -1;
+
 
   stacksSnapshotEvent('round_start_preflop');
   broadcastState();
@@ -275,25 +300,41 @@ function advanceStage(){
     dealCommunity(3);
     resetBets();
     STATE.minRaiseTo = BIG_BLIND;
-    STATE.currentPlayerIdx = nextActivePlayer(STATE.dealerBtn);
+
+    STATE.roundFirstIdx = nextActivePlayer(STATE.dealerBtn); // left of dealer
+    STATE.currentPlayerIdx = STATE.roundFirstIdx;
+    STATE.hasBetOrRaise = false;
+    STATE.lastRaiserIdx = -1;
+
     stacksSnapshotEvent('round_start_flop');
   } else if (STATE.stage === 'flop') {
     STATE.stage = 'turn';
     dealCommunity(1);
     resetBets();
-    STATE.currentPlayerIdx = nextActivePlayer(STATE.dealerBtn);
+
+    STATE.roundFirstIdx = nextActivePlayer(STATE.dealerBtn);
+    STATE.currentPlayerIdx = STATE.roundFirstIdx;
+    STATE.hasBetOrRaise = false;
+    STATE.lastRaiserIdx = -1;
+
     stacksSnapshotEvent('round_start_turn');
   } else if (STATE.stage === 'turn') {
     STATE.stage = 'river';
     dealCommunity(1);
     resetBets();
-    STATE.currentPlayerIdx = nextActivePlayer(STATE.dealerBtn);
+
+    STATE.roundFirstIdx = nextActivePlayer(STATE.dealerBtn);
+    STATE.currentPlayerIdx = STATE.roundFirstIdx;
+    STATE.hasBetOrRaise = false;
+    STATE.lastRaiserIdx = -1;
+
     stacksSnapshotEvent('round_start_river');
   } else if (STATE.stage === 'river') {
     STATE.stage = 'showdown';
     finishHand();
     return;
   }
+
   broadcastState();
 }
 
@@ -358,32 +399,54 @@ function handleAction(socket, {action, amount}) {
     if (betAmt <= 0) return;
     const needed = toCall + betAmt;
     const pay = Math.min(needed, p.stack);
+
     p.stack -= pay;
     p.bet += pay;
-    STATE.minRaiseTo = betAmt; // update min raise for this round
+
+    STATE.minRaiseTo = betAmt;
+    STATE.hasBetOrRaise = true;
+    STATE.lastRaiserIdx = idx;
+
     logEvent({ event: 'player_action', player: p, action: (toCall>0?'raise':'bet'), amount: pay });
+
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
+  }
+
   }
 }
 
 function turnRotateOrAdvance(){
-  // If all folded except one, go to showdown
+  // If only one left, done.
   const alive = STATE.players.filter(pp => pp.inHand && !pp.folded);
   if (alive.length <= 1) {
     STATE.stage = 'showdown';
     finishHand();
     return;
   }
-  // If bets aligned, advance stage
-  if (allBetsEqualOrAllIn()) {
-    advanceStage();
-    return;
+
+  // Move to next player
+  const nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
+  STATE.currentPlayerIdx = nextIdx;
+
+  // End-of-round conditions:
+  // 1) No one bet/raised this street -> advance when we return to the first actor
+  if (!STATE.hasBetOrRaise) {
+    if (STATE.currentPlayerIdx === STATE.roundFirstIdx) {
+      advanceStage();
+      return;
+    }
+  } else {
+    // 2) There was a bet/raise -> advance when action returns to the last raiser
+    if (STATE.currentPlayerIdx === STATE.lastRaiserIdx) {
+      advanceStage();
+      return;
+    }
   }
-  // Otherwise next player
-  STATE.currentPlayerIdx = nextActivePlayer(STATE.currentPlayerIdx);
+
   broadcastState();
 }
+
 
 // --- Socket.IO
 io.on('connection', (socket) => {
