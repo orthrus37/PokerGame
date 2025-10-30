@@ -307,7 +307,7 @@ function finishHand() {
 
   STATE.pot = 0;
   // auto-start next hand after short pause
-  setTimeout(startHand, 1200);
+  setTimeout(startHand, 8000);
   broadcastState();
 }
 
