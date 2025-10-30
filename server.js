@@ -292,23 +292,31 @@ function turnRotateOrAdvance() {
     return;
   }
 
+  // Check if everyone has called the highest bet
+  const activeBets = STATE.players
+    .filter(p => p.inHand && !p.folded)
+    .map(p => p.bet);
+  const allEqual = activeBets.every(b => b === activeBets[0]);
+
+  // If all bets are equal and at least one player acted -> advance stage
+  if (allEqual && STATE.hasBetOrRaise) {
+    advanceStage();
+    return;
+  }
+
+  // Otherwise move to next player
   const nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
   STATE.currentPlayerIdx = nextIdx;
 
-  if (!STATE.hasBetOrRaise) {
-    if (STATE.currentPlayerIdx === STATE.roundFirstIdx) {
-      advanceStage();
-      return;
-    }
-  } else {
-    if (STATE.currentPlayerIdx === STATE.lastRaiserIdx) {
-      advanceStage();
-      return;
-    }
+  // If we wrapped around and no one has raised, advance the stage
+  if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
+    advanceStage();
+    return;
   }
 
   broadcastState();
 }
+
 
 // ----------------------------------------------------
 // Socket.IO setup
