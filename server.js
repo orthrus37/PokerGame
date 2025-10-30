@@ -228,6 +228,14 @@ function dealCommunity(n) {
 }
 
 function startHand() {
+  STATE.players.forEach(p => {
+  p.inHand = p.stack > 0;
+  p.folded = false;
+  p.allIn = false; // 👈 reset
+  p.bet = 0;
+  p.cards = [];
+});
+
   if (STATE.players.length < 2) return;
 
   STATE.hasStarted = true;
@@ -340,6 +348,7 @@ function finishHand() {
 }
 
 /* ------------------------------ Actions ----------------------------------- */
+
 function handleAction(socket, { action, amount }) {
   const idx = playerIndexBySocket(socket.id);
   if (idx === -1) return;
@@ -366,10 +375,13 @@ function handleAction(socket, { action, amount }) {
   }
 
   if (action === 'call') {
-    const callAmt = Math.min(Math.max(0, toCall), p.stack);
+    // allow going all-in even if less than full call
+    const callAmt = Math.min(toCall, p.stack);
     p.stack -= callAmt;
     p.bet += callAmt;
-    logEvent({ event: 'player_action', player: p, action: 'call', amount: callAmt });
+    if (p.stack === 0) p.allIn = true;
+
+    logEvent({ event: 'player_action', player: p, action: p.allIn ? 'allin_call' : 'call', amount: callAmt });
     turnRotateOrAdvance();
     return;
   }
@@ -377,13 +389,12 @@ function handleAction(socket, { action, amount }) {
   if (action === 'bet' || action === 'raise') {
     const minRaise = Math.max(STATE.minRaiseTo, BIG_BLIND);
     const betAmt = Math.max(minRaise, Number(amount || 0));
-    if (betAmt <= 0) return;
-
-    const needed = toCall + betAmt;
-    const pay = Math.min(needed, p.stack);
+    const toPay = toCall + betAmt;
+    const pay = Math.min(toPay, p.stack); // capped at stack
 
     p.stack -= pay;
     p.bet += pay;
+    if (p.stack === 0) p.allIn = true;
 
     STATE.minRaiseTo = betAmt;
     STATE.hasBetOrRaise = true;
@@ -392,16 +403,17 @@ function handleAction(socket, { action, amount }) {
     logEvent({
       event: 'player_action',
       player: p,
-      action: toCall > 0 ? 'raise' : 'bet',
+      action: p.allIn ? 'allin_raise' : (toCall > 0 ? 'raise' : 'bet'),
       amount: pay
     });
 
-    // next to act after this player
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
     return;
   }
 }
+
+
 
 /* --------------------- Turn rotation & stage advance ---------------------- */
 function turnRotateOrAdvance() {
@@ -412,23 +424,40 @@ function turnRotateOrAdvance() {
     return;
   }
 
-  // Check if everyone has matched the highest bet (or everyone is all-in/folded)
+  // Check if all non-folded, non-all-in players have matched the highest bet
   const activeBets = STATE.players
-    .filter(p => p.inHand && !p.folded)
+    .filter(p => p.inHand && !p.folded && !p.allIn)
     .map(p => p.bet);
-  const allEqual = activeBets.length > 0 && activeBets.every(b => b === activeBets[0]);
 
-  // If there was a bet/raise and now all active bets are equal -> advance
+  const maxBet = Math.max(...STATE.players.map(p => p.bet));
+  const allEqual =
+    activeBets.length === 0 ||
+    activeBets.every(b => b === maxBet);
+
+  // If all remaining players (who can still act) are even, advance stage
   if (STATE.hasBetOrRaise && allEqual) {
     advanceStage();
     return;
   }
 
-  // Otherwise move to next player
-  const nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
+  // Otherwise move to next player who can act
+  let nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
+  let safetyCount = 0;
+
+  // Skip folded or all-in players
+  while (
+    safetyCount < STATE.players.length &&
+    (!STATE.players[nextIdx].inHand ||
+      STATE.players[nextIdx].folded ||
+      STATE.players[nextIdx].allIn)
+  ) {
+    nextIdx = nextActivePlayer(nextIdx);
+    safetyCount++;
+  }
+
   STATE.currentPlayerIdx = nextIdx;
 
-  // If no one bet/raised this street and we wrapped to first actor -> advance
+  // If no bet/raise and we’ve looped around, advance
   if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
     advanceStage();
     return;
