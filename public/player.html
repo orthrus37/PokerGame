@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Texas Hold'em Player</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #202020;
+      color: #fff;
+      margin: 0;
+      padding: 20px;
+    }
+    h2, h3 { color: #00ffaa; }
+    button {
+      padding: 6px 10px;
+      margin: 5px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background: #333;
+      color: #fff;
+      transition: 0.2s;
+    }
+    button:hover { background: #555; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #main {
+      display: flex;
+      gap: 20px;
+    }
+    #state {
+      background: #111;
+      border: 1px solid #444;
+      padding: 10px;
+      min-height: 180px;
+      overflow-y: auto;
+      border-radius: 8px;
+    }
+    #playerList {
+      background: #111;
+      border: 1px solid #444;
+      padding: 10px;
+      width: 220px;
+      border-radius: 8px;
+    }
+    .playerBox {
+      padding: 6px;
+      margin: 4px 0;
+      border-radius: 6px;
+      border: 1px solid #333;
+    }
+    .active-player {
+      background: linear-gradient(90deg, #00ff88, #00cc66);
+      color: #000;
+      font-weight: bold;
+      animation: pulse 1s infinite alternate;
+    }
+    @keyframes pulse {
+      from { box-shadow: 0 0 5px #00ff88; }
+      to { box-shadow: 0 0 20px #00ff88; }
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Texas Hold'em – Player Interface</h2>
+
+  <div id="joinSection">
+    <input id="name" placeholder="Enter your name" />
+    <button id="join">Join Table</button>
+  </div>
+
+  <div id="gameSection" style="display:none;">
+    <div id="main">
+      <div style="flex:1;">
+        <h3>Game Info</h3>
+        <div id="state"></div>
+
+        <div id="actions" style="margin-top:15px;">
+          <button id="foldBtn" onclick="act('fold')">Fold</button>
+          <button id="checkBtn" onclick="act('check')">Check</button>
+          <button id="callBtn" onclick="act('call')">Call</button>
+          <button id="raiseBtn" onclick="act('raise')">Raise</button>
+          <button id="betBtn" onclick="act('bet')">Bet</button>
+        </div>
+      </div>
+
+      <div>
+        <h3>Players</h3>
+        <div id="playerList"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    let myId = null;
+
+    // Join table
+    document.getElementById('join').onclick = () => {
+      const name = document.getElementById('name').value.trim();
+      if (name) socket.emit('player:join', { name });
+    };
+
+    // Confirm join
+    socket.on('player:accepted', (data) => {
+      myId = data.id;
+      document.getElementById('joinSection').style.display = 'none';
+      document.getElementById('gameSection').style.display = 'block';
+    });
+
+    // Main state updates
+    socket.on('state:update', (s) => {
+      // --- Update game info ---
+      document.getElementById('state').textContent =
+        JSON.stringify(s, null, 2);
+
+      const myTurn = s.currentPlayerId === myId;
+      const me = s.players.find(p => p.id === myId);
+      const myBet = me ? me.bet : 0;
+
+      // Compute current highest bet
+      const activeBets = s.players
+        .filter(p => p.inHand && !p.folded)
+        .map(p => p.bet);
+      const maxBet = activeBets.length > 0 ? Math.max(...activeBets) : 0;
+
+      // Show or hide action buttons
+      const actions = document.getElementById('actions');
+      actions.style.display = myTurn ? 'block' : 'none';
+
+      // Disable "Check" if you owe chips
+      const checkBtn = document.getElementById('checkBtn');
+      checkBtn.disabled = myBet < maxBet;
+      checkBtn.title = checkBtn.disabled
+        ? 'Cannot check – there is a bet to call'
+        : '';
+
+      // Highlight active player in sidebar
+      const playerList = document.getElementById('playerList');
+      playerList.innerHTML = s.players.map(p => {
+        const isTurn = s.currentPlayerId === p.id;
+        const folded = p.folded ? ' (folded)' : '';
+        const cls = isTurn ? 'playerBox active-player' : 'playerBox';
+        return `<div class="${cls}">
+                  ${p.name} — ${p.stack} chips${folded}
+                </div>`;
+      }).join('');
+    });
+
+    // Player performs an action
+    function act(a) {
+      socket.emit('player:action', { action: a });
+    }
+  </script>
+</body>
+</html>
