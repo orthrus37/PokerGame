@@ -1,21 +1,18 @@
-/* server.js — Orthrus Poker Table */
+/* server.js — Orthrus Poker Table (Texas Hold'em) */
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const evaluator = require('pokersolver');
-
+const { Hand } = require('pokersolver');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
-// ----------------------------------------------------
-// Static files and health check
-// ----------------------------------------------------
+/* ----------------------------- Static + Root ----------------------------- */
 app.get('/', (req, res) => {
   res.send(`
     <h2>Poker Table is running</h2>
@@ -24,23 +21,22 @@ app.get('/', (req, res) => {
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ----------------------------------------------------
-// Constants
-// ----------------------------------------------------
+/* --------------------------------- Consts -------------------------------- */
 const TABLE_MAX = 6;
 const STARTING_STACK = 2000;
 const SMALL_BLIND = 10;
 const BIG_BLIND = 20;
 
-// ----------------------------------------------------
-// Game State
-// ----------------------------------------------------
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+
+/* --------------------------------- State --------------------------------- */
 const STATE = {
   handId: 0,
   stage: 'lobby', // lobby | preflop | flop | turn | river | showdown
   community: [],
   deck: [],
-  players: [], // {id, name, socketId, stack, inHand, folded, bet, cards:[], seat}
+  players: [], // {id,name,socketId,seat,stack,inHand,folded,bet,cards:[]}
   dealerBtn: -1,
   currentPlayerIdx: -1,
   pot: 0,
@@ -48,29 +44,66 @@ const STATE = {
   tableOpen: true,
   actionLogFile: null,
   hasStarted: false,
-  // new fields for proper betting logic
-  roundFirstIdx: -1,
-  hasBetOrRaise: false,
-  lastRaiserIdx: -1
+
+  // per-street flow control
+  roundFirstIdx: -1,     // who acts first on this street
+  hasBetOrRaise: false,  // has there been any bet/raise this street?
+  lastRaiserIdx: -1      // index of last raiser
 };
 
-// ----------------------------------------------------
-// Logging utilities
-// ----------------------------------------------------
+/* ------------------------------- Utilities -------------------------------- */
+function freshDeck() {
+  const d = [];
+  for (const s of SUITS) for (const r of RANKS) d.push(`${r}${s}`);
+  return d;
+}
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function firstOpenSeat() {
+  const taken = new Set(STATE.players.map(p => p.seat));
+  for (let i = 0; i < TABLE_MAX; i++) if (!taken.has(i)) return i;
+  return -1;
+}
+function playerIndexBySocket(sid) {
+  return STATE.players.findIndex(p => p.socketId === sid);
+}
+function nextActivePlayer(fromIdx) {
+  const n = STATE.players.length;
+  for (let k = 1; k <= n; k++) {
+    const i = (fromIdx + k) % n;
+    const p = STATE.players[i];
+    if (p && p.inHand && !p.folded) return i;
+  }
+  return -1;
+}
+function resetBets() {
+  STATE.players.forEach(p => { if (p.inHand && !p.folded) p.bet = 0; });
+}
+function collectBetsToPot() {
+  STATE.pot += STATE.players.reduce((s, p) => s + (p.bet || 0), 0);
+  STATE.players.forEach(p => { p.bet = 0; });
+}
+function safeCsv(s) { return `"${String(s).replace(/"/g, '""')}"`; }
+
+/* -------------------------------- Logging --------------------------------- */
 function initLogFile() {
   const dir = path.join(__dirname, 'logs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-  const filename = `actions-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+  const filename = `actions-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
   const filepath = path.join(dir, filename);
   const header = [
     'timestamp','handId','stage','event','playerId','playerName','action','amount','pot','stacksSnapshot'
   ].join(',') + '\n';
   fs.writeFileSync(filepath, header);
   STATE.actionLogFile = filepath;
-  console.log("🪶 Log file created at:", filepath);
+  console.log('🪶 Log file created at:', filepath);
 }
-
-function logEvent({event, player, action='', amount=0}) {
+function logEvent({ event, player, action = '', amount = 0 }) {
   if (!STATE.actionLogFile) initLogFile();
   const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
   const line = [
@@ -87,121 +120,170 @@ function logEvent({event, player, action='', amount=0}) {
   ].join(',') + '\n';
   fs.appendFileSync(STATE.actionLogFile, line);
 }
-function safeCsv(s){ return `"${String(s).replace(/"/g,'""')}"`; }
-function stacksSnapshotEvent(eventLabel){ logEvent({ event: eventLabel, player: null }); }
+function stacksSnapshotEvent(label) {
+  logEvent({ event: label, player: null });
+}
 
-// ----------------------------------------------------
-// Deck utilities
-// ----------------------------------------------------
-const SUITS = ['♠','♥','♦','♣'];
-const RANKS = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
-function freshDeck(){ const d=[]; for (const s of SUITS) for (const r of RANKS) d.push(`${r}${s}`); return d; }
-function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
-
-// ----------------------------------------------------
-// Helpers
-// ----------------------------------------------------
+/* --------------------------- Broadcast state ------------------------------ */
+function sanitizeForHost() {
+  return {
+    handId: STATE.handId,
+    stage: STATE.stage,
+    community: STATE.community,
+    pot: STATE.pot,
+    dealerBtn: STATE.dealerBtn,
+    currentPlayerIdx: STATE.currentPlayerIdx,
+    currentPlayerId: STATE.players[STATE.currentPlayerIdx]?.id || null,
+    minRaiseTo: STATE.minRaiseTo,
+    players: STATE.players.map(p => ({
+      id: p.id,
+      name: p.name,
+      seat: p.seat,
+      stack: p.stack,
+      inHand: p.inHand,
+      folded: p.folded,
+      bet: p.bet,
+      cards: p.cards
+    }))
+  };
+}
+function sanitizeForPlayer(idx) {
+  const me = STATE.players[idx];
+  return {
+    handId: STATE.handId,
+    stage: STATE.stage,
+    community: STATE.stage === 'lobby' ? [] : STATE.community,
+    pot: STATE.pot,
+    dealerBtn: STATE.dealerBtn,
+    currentPlayerIdx: STATE.currentPlayerIdx,
+    currentPlayerId: STATE.players[STATE.currentPlayerIdx]?.id || null,
+    minRaiseTo: STATE.minRaiseTo,
+    me: {
+      id: me.id,
+      name: me.name,
+      seat: me.seat,
+      stack: me.stack,
+      inHand: me.inHand,
+      folded: me.folded,
+      bet: me.bet,
+      cards: me.cards
+    },
+    others: STATE.players.map((p, i) => ({
+      name: p.name,
+      seat: p.seat,
+      stack: p.stack,
+      inHand: p.inHand && !p.folded,
+      bet: p.bet,
+      isMe: i === idx
+    }))
+  };
+}
 function broadcastState() {
   io.to('host').emit('state:update', sanitizeForHost());
   STATE.players.forEach((p, idx) => {
     if (p.socketId) io.to(p.socketId).emit('state:update', sanitizeForPlayer(idx));
   });
 }
-function sanitizeForHost(){
-  return {
-    handId: STATE.handId, stage: STATE.stage, community: STATE.community,
-    pot: STATE.pot, dealerBtn: STATE.dealerBtn, currentPlayerIdx: STATE.currentPlayerIdx,
-    minRaiseTo: STATE.minRaiseTo,
-    players: STATE.players.map(p => ({
-      id:p.id,name:p.name,seat:p.seat,stack:p.stack,inHand:p.inHand,
-      folded:p.folded,bet:p.bet,cards:p.cards
-    }))
-  };
+
+/* ------------------------------ Hand flow --------------------------------- */
+function postBlind(idx, amt) {
+  const p = STATE.players[idx];
+  const blind = Math.min(amt, p.stack);
+  p.stack -= blind;
+  p.bet = blind;
+  logEvent({ event: 'post_blind', player: p, action: 'blind', amount: blind });
 }
-function sanitizeForPlayer(idx){
-  const me = STATE.players[idx];
-  return {
-    handId: STATE.handId, stage: STATE.stage,
-    community: STATE.stage==='lobby'?[]:STATE.community,
-    pot: STATE.pot, dealerBtn: STATE.dealerBtn, currentPlayerIdx: STATE.currentPlayerIdx,
-    minRaiseTo: STATE.minRaiseTo,
-    me:{id:me.id,name:me.name,seat:me.seat,stack:me.stack,inHand:me.inHand,folded:me.folded,bet:me.bet,cards:me.cards},
-    others: STATE.players.map((p,i)=>({name:p.name,seat:p.seat,stack:p.stack,inHand:p.inHand&&!p.folded,bet:p.bet,isMe:i===idx}))
-  };
+function dealCommunity(n) {
+  // burn one
+  STATE.deck.pop();
+  for (let i = 0; i < n; i++) STATE.community.push(STATE.deck.pop());
 }
-function firstOpenSeat(){ const taken=new Set(STATE.players.map(p=>p.seat)); for(let i=0;i<6;i++){if(!taken.has(i))return i;} return -1; }
-function playerIndexBySocket(sid){ return STATE.players.findIndex(p=>p.socketId===sid); }
-function nextActivePlayer(fromIdx){ const n=STATE.players.length; for(let k=1;k<=n;k++){const i=(fromIdx+k)%n;const p=STATE.players[i];if(p&&p.inHand&&!p.folded&&p.stack>=0)return i;} return -1; }
-function resetBets(){ STATE.players.forEach(p=>{ if(p.inHand&&!p.folded) p.bet=0; }); }
-function collectBetsToPot(){ STATE.pot+=STATE.players.reduce((s,p)=>s+(p.bet||0),0); STATE.players.forEach(p=>p.bet=0); }
 
-// ----------------------------------------------------
-// Game Flow
-// ----------------------------------------------------
-function startHand(){
-  if(STATE.players.length<2)return;
-  STATE.hasStarted=true; STATE.stage='preflop'; STATE.handId+=1;
-  STATE.community=[]; STATE.pot=0; STATE.minRaiseTo=BIG_BLIND;
-  STATE.deck=shuffle(freshDeck());
-  STATE.players.forEach(p=>{p.inHand=p.stack>0;p.folded=false;p.bet=0;p.cards=[];});
-  STATE.dealerBtn=(STATE.dealerBtn+1)%STATE.players.length;
+function startHand() {
+  if (STATE.players.length < 2) return;
 
-  // deal
-  for(let r=0;r<2;r++){for(let i=0;i<STATE.players.length;i++){STATE.players[i].cards.push(STATE.deck.pop());}}
+  STATE.hasStarted = true;
+  STATE.stage = 'preflop';
+  STATE.handId += 1;
+  STATE.community = [];
+  STATE.pot = 0;
+  STATE.minRaiseTo = BIG_BLIND;
+  STATE.deck = shuffle(freshDeck());
 
-  const sbIdx=(STATE.dealerBtn+1)%STATE.players.length;
-  const bbIdx=(STATE.dealerBtn+2)%STATE.players.length;
-  postBlind(sbIdx,SMALL_BLIND);
-  postBlind(bbIdx,BIG_BLIND);
+  STATE.players.forEach(p => {
+    p.inHand = p.stack > 0;
+    p.folded = false;
+    p.bet = 0;
+    p.cards = [];
+  });
 
-  STATE.currentPlayerIdx=(STATE.dealerBtn+3)%STATE.players.length;
-  STATE.roundFirstIdx=STATE.currentPlayerIdx;
-  STATE.hasBetOrRaise=false;
-  STATE.lastRaiserIdx=-1;
+  STATE.dealerBtn = (STATE.dealerBtn + 1 + STATE.players.length) % STATE.players.length;
+
+  // deal 2 cards each
+  for (let r = 0; r < 2; r++) {
+    for (let i = 0; i < STATE.players.length; i++) {
+      STATE.players[i].cards.push(STATE.deck.pop());
+    }
+  }
+
+  // blinds
+  const sbIdx = (STATE.dealerBtn + 1) % STATE.players.length;
+  const bbIdx = (STATE.dealerBtn + 2) % STATE.players.length;
+  postBlind(sbIdx, SMALL_BLIND);
+  postBlind(bbIdx, BIG_BLIND);
+
+  // first to act preflop: left of BB
+  STATE.currentPlayerIdx = (STATE.dealerBtn + 3) % STATE.players.length;
+  STATE.roundFirstIdx = STATE.currentPlayerIdx;
+  STATE.hasBetOrRaise = false;
+  STATE.lastRaiserIdx = -1;
 
   stacksSnapshotEvent('round_start_preflop');
   broadcastState();
 }
-function postBlind(idx,amt){const p=STATE.players[idx];const blind=Math.min(amt,p.stack);p.stack-=blind;p.bet=blind;logEvent({event:'post_blind',player:p,action:'blind',amount:blind});}
-function dealCommunity(n){STATE.deck.pop();for(let i=0;i<n;i++)STATE.community.push(STATE.deck.pop());}
 
-function advanceStage(){
-  const alive=STATE.players.filter(p=>p.inHand&&!p.folded);
-  if(alive.length<=1){STATE.stage='showdown';finishHand();return;}
+function advanceStage() {
+  const alive = STATE.players.filter(p => p.inHand && !p.folded);
+  if (alive.length <= 1) {
+    STATE.stage = 'showdown';
+    finishHand();
+    return;
+  }
+
   collectBetsToPot();
 
-  const stages=['preflop','flop','turn','river'];
-  const next={preflop:'flop',flop:'turn',turn:'river',river:'showdown'};
-  STATE.stage=next[STATE.stage]||'showdown';
-  if(STATE.stage==='showdown'){finishHand();return;}
+  const next = { preflop: 'flop', flop: 'turn', turn: 'river', river: 'showdown' };
+  STATE.stage = next[STATE.stage] || 'showdown';
+  if (STATE.stage === 'showdown') {
+    finishHand();
+    return;
+  }
 
-  if(STATE.stage==='flop')dealCommunity(3);
-  if(STATE.stage==='turn'||STATE.stage==='river')dealCommunity(1);
+  if (STATE.stage === 'flop') dealCommunity(3);
+  if (STATE.stage === 'turn' || STATE.stage === 'river') dealCommunity(1);
 
   resetBets();
-  STATE.minRaiseTo=BIG_BLIND;
-  STATE.roundFirstIdx=nextActivePlayer(STATE.dealerBtn);
-  STATE.currentPlayerIdx=STATE.roundFirstIdx;
-  STATE.hasBetOrRaise=false;
-  STATE.lastRaiserIdx=-1;
+  STATE.minRaiseTo = BIG_BLIND;
 
-  stacksSnapshotEvent('round_start_'+STATE.stage);
+  // postflop first to act: left of dealer
+  STATE.roundFirstIdx = nextActivePlayer(STATE.dealerBtn);
+  STATE.currentPlayerIdx = STATE.roundFirstIdx;
+  STATE.hasBetOrRaise = false;
+  STATE.lastRaiserIdx = -1;
+
+  stacksSnapshotEvent(`round_start_${STATE.stage}`);
   broadcastState();
 }
 
-// ----------------------------------------------------
-// Evaluate winners and finish the hand
-// ----------------------------------------------------
 function finishHand() {
   collectBetsToPot();
   const alive = STATE.players.filter(p => p.inHand && !p.folded);
 
   if (alive.length === 1) {
-    // Only one player left, they win the entire pot
     alive[0].stack += STATE.pot;
     logEvent({ event: 'win_pot', player: alive[0], action: 'win', amount: STATE.pot });
   } else if (alive.length > 1) {
-    // Multiple players still in — use pokersolver to evaluate hands
+    // Evaluate each player's best 7-card hand with pokersolver
     const results = alive.map(p => {
       const allCards = [...STATE.community, ...p.cards];
       const hand = Hand.solve(allCards);
@@ -224,13 +306,12 @@ function finishHand() {
   }
 
   STATE.pot = 0;
-  setTimeout(startHand, 1500);
+  // auto-start next hand after short pause
+  setTimeout(startHand, 1200);
   broadcastState();
 }
 
-// ----------------------------------------------------
-// Action Handling
-// ----------------------------------------------------
+/* ------------------------------ Actions ----------------------------------- */
 function handleAction(socket, { action, amount }) {
   const idx = playerIndexBySocket(socket.id);
   if (idx === -1) return;
@@ -245,26 +326,37 @@ function handleAction(socket, { action, amount }) {
     p.folded = true;
     logEvent({ event: 'player_action', player: p, action: 'fold', amount: 0 });
     turnRotateOrAdvance();
-  } else if (action === 'check') {
+    return;
+  }
+
+  if (action === 'check') {
     if (toCall === 0) {
       logEvent({ event: 'player_action', player: p, action: 'check', amount: 0 });
       turnRotateOrAdvance();
     }
-  } else if (action === 'call') {
-    const callAmt = Math.min(toCall, p.stack);
+    return;
+  }
+
+  if (action === 'call') {
+    const callAmt = Math.min(Math.max(0, toCall), p.stack);
     p.stack -= callAmt;
     p.bet += callAmt;
     logEvent({ event: 'player_action', player: p, action: 'call', amount: callAmt });
     turnRotateOrAdvance();
-  } else if (action === 'bet' || action === 'raise') {
+    return;
+  }
+
+  if (action === 'bet' || action === 'raise') {
     const minRaise = Math.max(STATE.minRaiseTo, BIG_BLIND);
     const betAmt = Math.max(minRaise, Number(amount || 0));
     if (betAmt <= 0) return;
 
     const needed = toCall + betAmt;
     const pay = Math.min(needed, p.stack);
+
     p.stack -= pay;
     p.bet += pay;
+
     STATE.minRaiseTo = betAmt;
     STATE.hasBetOrRaise = true;
     STATE.lastRaiserIdx = idx;
@@ -276,14 +368,14 @@ function handleAction(socket, { action, amount }) {
       amount: pay
     });
 
+    // next to act after this player
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
+    return;
   }
 }
 
-// ----------------------------------------------------
-// Turn rotation & stage advance
-// ----------------------------------------------------
+/* --------------------- Turn rotation & stage advance ---------------------- */
 function turnRotateOrAdvance() {
   const alive = STATE.players.filter(pp => pp.inHand && !pp.folded);
   if (alive.length <= 1) {
@@ -292,14 +384,14 @@ function turnRotateOrAdvance() {
     return;
   }
 
-  // Check if everyone has called the highest bet
+  // Check if everyone has matched the highest bet (or everyone is all-in/folded)
   const activeBets = STATE.players
     .filter(p => p.inHand && !p.folded)
     .map(p => p.bet);
-  const allEqual = activeBets.every(b => b === activeBets[0]);
+  const allEqual = activeBets.length > 0 && activeBets.every(b => b === activeBets[0]);
 
-  // If all bets are equal and at least one player acted -> advance stage
-  if (allEqual && STATE.hasBetOrRaise) {
+  // If there was a bet/raise and now all active bets are equal -> advance
+  if (STATE.hasBetOrRaise && allEqual) {
     advanceStage();
     return;
   }
@@ -308,7 +400,7 @@ function turnRotateOrAdvance() {
   const nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
   STATE.currentPlayerIdx = nextIdx;
 
-  // If we wrapped around and no one has raised, advance the stage
+  // If no one bet/raised this street and we wrapped to first actor -> advance
   if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
     advanceStage();
     return;
@@ -317,10 +409,7 @@ function turnRotateOrAdvance() {
   broadcastState();
 }
 
-
-// ----------------------------------------------------
-// Socket.IO setup
-// ----------------------------------------------------
+/* ------------------------------ Socket.IO --------------------------------- */
 io.on('connection', (socket) => {
   socket.on('host:join', () => {
     socket.join('host');
@@ -334,7 +423,6 @@ io.on('connection', (socket) => {
       socket.emit('player:reject', { reason: 'Table full or game started' });
       return;
     }
-
     const seat = firstOpenSeat();
     if (seat === -1) {
       socket.emit('player:reject', { reason: 'No seats available' });
@@ -360,6 +448,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('player:action', (payload) => handleAction(socket, payload));
+
   socket.on('host:start', () => {
     if (STATE.players.length >= 2 && !STATE.hasStarted) {
       STATE.tableOpen = false;
@@ -387,28 +476,23 @@ io.on('connection', (socket) => {
   });
 });
 
-// ----------------------------------------------------
-// CSV download route for host
-// ----------------------------------------------------
+/* --------------------------- CSV download route --------------------------- */
 app.get('/latest-log', (req, res) => {
   const dir = path.join(__dirname, 'logs');
   if (!fs.existsSync(dir)) return res.status(404).send('No logs folder yet.');
-  const files = fs
-    .readdirSync(dir)
+  const files = fs.readdirSync(dir)
     .filter(f => f.startsWith('actions-') && f.endsWith('.csv'))
     .map(f => ({ name: f, time: fs.statSync(path.join(dir, f)).mtime }))
     .sort((a, b) => b.time - a.time);
-
   if (!files.length) return res.status(404).send('No log files yet.');
   const latest = files[0].name;
   res.download(path.join(dir, latest), latest);
 });
 
-// ----------------------------------------------------
-// Server listener
-// ----------------------------------------------------
+/* --------------------------------- Listen --------------------------------- */
 server.listen(PORT, () => {
   console.log(`Poker table server listening on http://0.0.0.0:${PORT}`);
   console.log(`Host UI:   http://<server-ip>:${PORT}/host.html`);
   console.log(`Players:   http://<server-ip>:${PORT}/player.html`);
 });
+
