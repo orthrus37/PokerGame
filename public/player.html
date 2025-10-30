@@ -1,3 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Poker Player</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Texas Hold’em — Player</h1>
+
+    <div id="joinPanel">
+      <label class="label">Enter name</label>
+      <input id="name" class="input" placeholder="Your name">
+      <div style="height:8px"></div>
+      <button id="joinBtn">Join Table</button>
+      <p class="small" id="joinMsg"></p>
+    </div>
+
+    <div id="gamePanel" style="display:none;">
+      <div class="row">
+        <div class="col">
+          <div class="table">
+            <div><span class="label">Hand</span> <span id="handId" class="badge">—</span></div>
+            <div><span class="label">Stage</span> <span id="stage" class="badge">lobby</span></div>
+            <div><span class="label">Pot</span> <span id="pot" class="badge">0</span></div>
+            <div><span class="label">You</span> <span id="me" class="badge">—</span></div>
+            <div><span class="label">Your Cards</span> <div id="myCards" class="cards">—</div></div>
+            <div><span class="label">Community</span> <div id="community" class="community">—</div></div>
+          </div>
+        </div>
+        <div class="col">
+          <h3>Table</h3>
+          <div id="others" class="list"></div>
+        </div>
+      </div>
+
+      <div style="height:12px"></div>
+      <div class="card">
+        <h3>Actions</h3>
+        <p class="small">It’s your turn only when your name is highlighted on the host screen (and action buttons will unlock).</p>
+        <div class="row">
+          <button id="foldBtn" disabled>Fold</button>
+          <button id="checkBtn" disabled>Check</button>
+          <button id="callBtn" disabled>Call</button>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input id="raiseAmt" class="input" placeholder="Bet/Raise to..." style="width:160px">
+            <button id="raiseBtn" disabled>Bet / Raise</button>
+          </div>
+        </div>
+        <p class="small" id="hint"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
   const el = id => document.getElementById(id);
