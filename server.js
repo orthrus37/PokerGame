@@ -90,6 +90,16 @@ function collectBetsToPot() {
 }
 function safeCsv(s) { return `"${String(s).replace(/"/g, '""')}"`; }
 
+function removePlayerById(playerId) {
+  const idx = STATE.players.findIndex(p => p.id === playerId);
+  if (idx !== -1) {
+    const p = STATE.players[idx];
+    logEvent({ event: 'player_removed', player: p });
+    STATE.players.splice(idx, 1);
+    broadcastState();
+  }
+}
+
 /* -------------------------------- Logging --------------------------------- */
 
 function initLogFile() {
@@ -341,6 +351,14 @@ function finishHand() {
     });
   }
 
+  // --- Auto-remove players with 0 chips (busted) ---
+  const busted = STATE.players.filter(p => p.stack <= 0);
+  if (busted.length > 0) {
+  busted.forEach(p => logEvent({ event: 'player_busted', player: p }));
+  STATE.players = STATE.players.filter(p => p.stack > 0);
+}
+
+
   STATE.pot = 0;
   // auto-start next hand after short pause
   setTimeout(startHand, 8000);
@@ -531,6 +549,14 @@ io.on('connection', (socket) => {
       broadcastState();
     }
   });
+
+  socket.on('host:removePlayer', (playerId) => {
+  // only allow manual removal between hands
+    if (STATE.waitingForNextHand || STATE.inDelay) {
+      removePlayerById(playerId);
+    }
+  });
+
 });
 
 /* --------------------------- CSV download route --------------------------- */
