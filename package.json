@@ -1,0 +1,17 @@
+{
+  "name": "poker-table",
+  "version": "1.0.0",
+  "description": "Self-hosted 6-player Texas Hold'em with action logging",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "uuid": "^9.0.1"
+  }
+}
