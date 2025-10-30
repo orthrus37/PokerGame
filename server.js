@@ -5,7 +5,7 @@ const { Server } = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const evaluator = require('poker-hand-evaluator');
+const evaluator = require('pokersolver');
 
 
 const app = express();
@@ -199,27 +199,31 @@ function finishHand() {
   } else if (alive.length > 1) {
     // Evaluate each player's best 7-card hand
     const results = alive.map(p => {
-      const fullHand = [...STATE.community, ...p.cards];
-      const evalResult = evaluator.evalHand(fullHand);
-      return { player: p, rank: evalResult.value, name: evalResult.handName };
+      const allCards = [...STATE.community, ...p.cards];
+      const hand = Hand.solve(allCards);
+      return { player: p, hand };
     });
 
-    // Find the highest rank (bigger = better)
-    const best = Math.max(...results.map(r => r.rank));
-    const winners = results.filter(r => r.rank === best);
+    const winners = Hand.winners(results.map(r => r.hand));
+    const winnerPlayers = results.filter(r => winners.includes(r.hand));
 
-    // Split pot if tie
-    const share = Math.floor(STATE.pot / winners.length);
-    winners.forEach(w => {
+    const share = Math.floor(STATE.pot / winnerPlayers.length);
+    winnerPlayers.forEach(w => {
       w.player.stack += share;
       logEvent({
         event: 'win_pot',
         player: w.player,
-        action: `win_${w.name}`,
+        action: `win_${w.hand.name}`,
         amount: share
       });
     });
   }
+
+  STATE.pot = 0;
+  setTimeout(startHand, 1500);
+  broadcastState();
+}
+
 
   STATE.pot = 0;
   setTimeout(startHand, 1500);
