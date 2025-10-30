@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Poker Player</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Texas Hold’em — Player</h1>
+
+    <div id="joinPanel">
+      <label class="label">Enter name</label>
+      <input id="name" class="input" placeholder="Your name">
+      <div style="height:8px"></div>
+      <button id="joinBtn">Join Table</button>
+      <p class="small" id="joinMsg"></p>
+    </div>
+
+    <div id="gamePanel" style="display:none;">
+      <div class="row">
+        <div class="col">
+          <div class="table">
+            <div><span class="label">Hand</span> <span id="handId" class="badge">—</span></div>
+            <div><span class="label">Stage</span> <span id="stage" class="badge">lobby</span></div>
+            <div><span class="label">Pot</span> <span id="pot" class="badge">0</span></div>
+            <div><span class="label">You</span> <span id="me" class="badge">—</span></div>
+            <div><span class="label">Your Cards</span> <div id="myCards" class="cards">—</div></div>
+            <div><span class="label">Community</span> <div id="community" class="community">—</div></div>
+          </div>
+        </div>
+        <div class="col">
+          <h3>Table</h3>
+          <div id="others" class="list"></div>
+        </div>
+      </div>
+
+      <div style="height:12px"></div>
+      <div class="card">
+        <h3>Actions</h3>
+        <p class="small">It’s your turn only when your name is highlighted on the host screen (and action buttons will unlock).</p>
+        <div class="row">
+          <button id="foldBtn" disabled>Fold</button>
+          <button id="checkBtn" disabled>Check</button>
+          <button id="callBtn" disabled>Call</button>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input id="raiseAmt" class="input" placeholder="Bet/Raise to..." style="width:160px">
+            <button id="raiseBtn" disabled>Bet / Raise</button>
+          </div>
+        </div>
+        <p class="small" id="hint"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  const el = id => document.getElementById(id);
+
+  let myId = null;
+  let latestState = null;
+
+  el('joinBtn').onclick = () => {
+    const name = el('name').value.trim() || 'Player';
+    socket.emit('player:join', { name });
+  };
+
+  socket.on('player:accepted', ({ id }) => {
+    myId = id;
+    el('joinPanel').style.display = 'none';
+    el('gamePanel').style.display = 'block';
+  });
+
+  socket.on('player:reject', ({ reason }) => {
+    el('joinMsg').textContent = reason || 'Join failed.';
+  });
+
+  socket.on('state:update', (s) => {
+    latestState = s;
+
+    el('handId').textContent = s.handId;
+    el('stage').textContent = s.stage;
+    el('pot').textContent = s.pot;
+    el('community').textContent = (s.community && s.community.length) ? s.community.join(' ') : '—';
+
+    const me = s.me;
+    if (me) {
+      el('me').textContent = `${me.name} (seat ${me.seat}) — Stack: ${me.stack}`;
+      el('myCards').textContent = me.cards && me.cards.length ? me.cards.join(' ') : '—';
+    }
+
+    const others = el('others');
+    others.innerHTML = '';
+    (s.others || []).forEach(o => {
+      const row = document.createElement('div');
+      row.className = 'player-row';
+      row.innerHTML = `
+        <div><strong>${o.name}${o.isMe?' (You)':''}</strong> <span class="small">[seat ${o.seat ?? '—'}]</span></div>
+        <div class="small">Stack: ${o.stack} • Bet: ${o.bet ?? 0} • ${o.inHand ? 'IN' : 'OUT'}</div>
+      `;
+      others.appendChild(row);
+    });
+
+    // Enable actions only on your turn and if you're still in the hand
+    const myTurn = (s.currentPlayerIdx !== undefined) &&
+                   (s.others && s.others[s.currentPlayerIdx] && s.others[s.currentPlayerIdx].isMe);
+    const iAmIn = me && me.inHand && !me.folded && me.stack >= 0;
+
+    const enable = (!!myTurn && !!iAmIn && (s.stage !== 'lobby' && s.stage !== 'showdown'));
+    el('foldBtn').disabled = !enable;
+    el('checkBtn').disabled = !enable;
+    el('callBtn').disabled = !enable;
+    el('raiseBtn').disabled = !enable;
+
+    el('hint').textContent = enable
+      ? `Your turn. Minimum raise to: ${s.minRaiseTo}`
+      : `Waiting for other players...`;
+  });
+
+  // Actions
+  el('foldBtn').onclick = () => socket.emit('player:action', { action:'fold' });
+  el('checkBtn').onclick = () => socket.emit('player:action', { action:'check' });
+  el('callBtn').onclick = () => socket.emit('player:action', { action:'call' });
+  el('raiseBtn').onclick = () => {
+    const amt = Number(el('raiseAmt').value || 0);
+    if (!Number.isFinite(amt) || amt <= 0) return;
+    socket.emit('player:action', { action:'raise', amount: amt });
+    el('raiseAmt').value = '';
+  };
+</script>
+</body>
+</html>
