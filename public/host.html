@@ -23,6 +23,7 @@
           <div>
             <button id="startBtn">Start Game</button>
             <button id="nextHandBtn">Force Next Hand</button>
+            <div id="playerList"></div>
             <div style="margin-top:10px;">
             <a href="/latest-log" id="logLink" target="_blank" class="badge" 
              style="text-decoration:none;">📄 Download Log CSV</a>
@@ -73,8 +74,22 @@
         </div>
       `;
       list.appendChild(row);
-    });
+    }); 
   });
+    socket.on('state:update', (s) => {
+      const list = s.players.map(p =>
+        `<li>${p.name} – ${p.stack}
+          ${(s.waitingForNextHand || s.inDelay)
+        ? `<button onclick="remove('${p.id}')">Remove</button>` : ''}
+       </li>`
+      ).join('');
+      document.getElementById('playerList').innerHTML = `<ul>${list}</ul>`;
+  });
+
+function remove(id) {
+  socket.emit('host:removePlayer', id);
+}
+
 
   document.getElementById('startBtn').onclick = () => socket.emit('host:start');
   document.getElementById('nextHandBtn').onclick = () => socket.emit('host:nextHandNow');
