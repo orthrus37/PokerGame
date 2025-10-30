@@ -91,21 +91,45 @@ function collectBetsToPot() {
 function safeCsv(s) { return `"${String(s).replace(/"/g, '""')}"`; }
 
 /* -------------------------------- Logging --------------------------------- */
+
 function initLogFile() {
   const dir = path.join(__dirname, 'logs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir);
   const filename = `actions-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
   const filepath = path.join(dir, filename);
+
   const header = [
-    'timestamp','handId','stage','event','playerId','playerName','action','amount','pot','stacksSnapshot'
+    'timestamp',
+    'handId',
+    'stage',
+    'event',
+    'playerId',
+    'playerName',
+    'action',
+    'amount',
+    'pot',
+    'playerStack',    // 👈 new column
+    'playerHand',     // 👈 new column
+    'stacksSnapshot'
   ].join(',') + '\n';
+
   fs.writeFileSync(filepath, header);
   STATE.actionLogFile = filepath;
-  console.log('🪶 Log file created at:', filepath);
+  console.log("🪶 Log file created at:", filepath);
 }
+
 function logEvent({ event, player, action = '', amount = 0 }) {
   if (!STATE.actionLogFile) initLogFile();
+
   const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
+
+  // New fields
+  const playerHand = player && player.cards && player.cards.length
+    ? player.cards.join(' ')
+    : '';
+
+  const playerStack = player ? player.stack : '';
+
   const line = [
     new Date().toISOString(),
     STATE.handId,
@@ -116,10 +140,14 @@ function logEvent({ event, player, action = '', amount = 0 }) {
     action,
     amount,
     STATE.pot,
+    playerStack,             // 👈 new individual stack column
+    safeCsv(playerHand),     // 👈 new hand column
     safeCsv(stacksSnapshot)
   ].join(',') + '\n';
+
   fs.appendFileSync(STATE.actionLogFile, line);
 }
+
 function stacksSnapshotEvent(label) {
   logEvent({ event: label, player: null });
 }
