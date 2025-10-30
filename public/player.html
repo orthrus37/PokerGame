@@ -105,8 +105,7 @@
     });
 
     // Enable actions only on your turn and if you're still in the hand
-    const myTurn = (s.currentPlayerIdx !== undefined) &&
-                   (s.others && s.others[s.currentPlayerIdx] && s.others[s.currentPlayerIdx].isMe);
+    const myTurn = !!(s.currentPlayerId && s.me && s.currentPlayerId === s.me.id);
     const iAmIn = me && me.inHand && !me.folded && me.stack >= 0;
 
     const enable = (!!myTurn && !!iAmIn && (s.stage !== 'lobby' && s.stage !== 'showdown'));
