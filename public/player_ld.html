@@ -96,9 +96,15 @@
     others.innerHTML = '';
     (s.others || []).forEach(o => {
       const row = document.createElement('div');
+      const isActive = s.currentPlayerId === o.id; // ✅ highlight if it's their turn
       row.className = 'player-row';
+      row.style.background = isActive ? 'rgba(0,255,0,0.2)' : '';
+      row.style.border = isActive ? '2px solid #0f0' : '1px solid #444';
       row.innerHTML = `
-        <div><strong>${o.name}${o.isMe?' (You)':''}</strong> <span class="small">[seat ${o.seat ?? '—'}]</span></div>
+        <div><strong>${o.name}${o.isMe ? ' (You)' : ''}</strong>
+          <span class="small">[seat ${o.seat ?? '—'}]</span>
+          ${isActive ? '<span class="small" style="color:#0f0;"> ← Acting</span>' : ''}
+        </div>
         <div class="small">Stack: ${o.stack} • Bet: ${o.bet ?? 0} • ${o.inHand ? 'IN' : 'OUT'}</div>
       `;
       others.appendChild(row);
@@ -107,12 +113,25 @@
     // Enable actions only on your turn and if you're still in the hand
     const myTurn = !!(s.currentPlayerId && s.me && s.currentPlayerId === s.me.id);
     const iAmIn = me && me.inHand && !me.folded && me.stack >= 0;
-
     const enable = (!!myTurn && !!iAmIn && (s.stage !== 'lobby' && s.stage !== 'showdown'));
+
     el('foldBtn').disabled = !enable;
     el('checkBtn').disabled = !enable;
     el('callBtn').disabled = !enable;
     el('raiseBtn').disabled = !enable;
+
+    // ✅ Disable "Check" if my bet < highest active bet
+    if (enable && me) {
+      const activeBets = s.players.filter(p => p.inHand && !p.folded).map(p => p.bet);
+      const maxBet = activeBets.length ? Math.max(...activeBets) : 0;
+      const myBet = me.bet || 0;
+      if (myBet < maxBet) {
+        el('checkBtn').disabled = true;
+        el('checkBtn').title = 'Cannot check – there is a bet to call';
+      } else {
+        el('checkBtn').title = '';
+      }
+    }
 
     el('hint').textContent = enable
       ? `Your turn. Minimum raise to: ${s.minRaiseTo}`
@@ -120,15 +139,16 @@
   });
 
   // Actions
-  el('foldBtn').onclick = () => socket.emit('player:action', { action:'fold' });
-  el('checkBtn').onclick = () => socket.emit('player:action', { action:'check' });
-  el('callBtn').onclick = () => socket.emit('player:action', { action:'call' });
+  el('foldBtn').onclick = () => socket.emit('player:action', { action: 'fold' });
+  el('checkBtn').onclick = () => socket.emit('player:action', { action: 'check' });
+  el('callBtn').onclick = () => socket.emit('player:action', { action: 'call' });
   el('raiseBtn').onclick = () => {
     const amt = Number(el('raiseAmt').value || 0);
     if (!Number.isFinite(amt) || amt <= 0) return;
-    socket.emit('player:action', { action:'raise', amount: amt });
+    socket.emit('player:action', { action: 'raise', amount: amt });
     el('raiseAmt').value = '';
   };
 </script>
+
 </body>
 </html>
