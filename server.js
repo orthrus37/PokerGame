@@ -50,12 +50,13 @@ const STATE = {
   minRaiseTo: BIG_BLIND,
   tableOpen: true,
   actionLogFile: null, // CSV file path
-  hasStarted: false
+  hasStarted: false,
+
   roundFirstIdx: -1,
   hasBetOrRaise: false,
-  lastRaiserIdx: -1,
-
+  lastRaiserIdx: -1
 };
+
 
 // --- Utility: create/append CSV log
 function initLogFile() {
