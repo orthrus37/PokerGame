@@ -413,8 +413,6 @@ function handleAction(socket, {action, amount}) {
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
   }
-
-  }
 }
 
 function turnRotateOrAdvance(){
