@@ -24,11 +24,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 /* --------------------------------- Consts -------------------------------- */
 const TABLE_MAX = 6;
 const STARTING_STACK = 2000;
-const SMALL_BLIND = 10;
-const BIG_BLIND = 20;
+const SMALL_BLIND = 25;
+const BIG_BLIND = 50;
 
 const SUITS = ['♠','♥','♦','♣'];
-const RANKS = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 
 /* --------------------------------- State --------------------------------- */
 const STATE = {
