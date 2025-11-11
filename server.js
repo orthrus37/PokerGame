@@ -112,7 +112,7 @@ function initLogFile() {
   const filepath = path.join(dir, filename);
   const header = [
     'timestamp','handId','stage','event','playerId','playerName',
-    'action','amount','pot','playerStack','playerHand','stacksSnapshot'
+    'action','amount','pot','playerStack','playerHand','community','stacksSnapshot'
   ].join(',') + '\n';
   fs.writeFileSync(filepath, header);
   STATE.actionLogFile = filepath;
@@ -123,6 +123,7 @@ function logEvent({ event, player, action = '', amount = 0 }) {
   const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
   const playerHand = player && player.cards && player.cards.length ? player.cards.join(' ') : '';
   const playerStack = player ? player.stack : '';
+  const communityStr = STATE.community && STATE.community.length ? STATE.community.join(' ') : '';
   const line = [
     new Date().toISOString(),
     STATE.handId,
@@ -135,6 +136,7 @@ function logEvent({ event, player, action = '', amount = 0 }) {
     STATE.pot,
     playerStack,
     safeCsv(playerHand),
+    safeCsv(communityStr),
     safeCsv(stacksSnapshot)
   ].join(',') + '\n';
   fs.appendFileSync(STATE.actionLogFile, line);
