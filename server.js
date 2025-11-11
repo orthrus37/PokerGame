@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => {
   res.send(`
     <h2>Poker Table is running</h2>
-    <p><a href="/host.html">Host UI</a> | <a href="/player.html">Player UI</a></p>
+    <p><a href="/anonymouseanonymouseanonymousehost.html">anonymouseanonymousehost UI</a> | <a href="/player.html">Player UI</a></p>
   `);
 });
 app.use(express.static(path.join(__dirname, 'public')));
@@ -272,7 +272,7 @@ function updateSidePotsPreview() {
 }
 
 /* --------------------------- Broadcast state ------------------------------ */
-function sanitizeForHost() {
+function sanitizeForanonymouseanonymousehost() {
   return {
     handId: STATE.handId,
     stage: STATE.stage,
@@ -313,11 +313,11 @@ function broadcastState() {
   const safeIdx = (STATE.currentPlayerIdx >= 0 && STATE.currentPlayerIdx < STATE.players.length)
     ? STATE.currentPlayerIdx : -1;
 
-  const hostPayload = { ...sanitizeForHost(),
+  const anonymouseanonymousehostPayload = { ...sanitizeForanonymouseanonymousehost(),
     currentPlayerIdx: safeIdx,
     currentPlayerId: safeIdx === -1 ? null : STATE.players[safeIdx].id
   };
-  io.to('host').emit('state:update', hostPayload);
+  io.to('anonymouseanonymousehost').emit('state:update', anonymouseanonymousehostPayload);
 
   STATE.players.forEach((p, idx) => {
     if (p.socketId) io.to(p.socketId).emit('state:update', sanitizeForPlayer(idx));
@@ -654,10 +654,10 @@ function hardReset() {
 
 /* ------------------------------ Socket.IO --------------------------------- */
 io.on('connection', (socket) => {
-  socket.on('host:join', () => {
-    socket.join('host');
+  socket.on('anonymouseanonymousehost:join', () => {
+    socket.join('anonymouseanonymousehost');
     ensureLog();
-    socket.emit('host:welcome', { ok: true });
+    socket.emit('anonymouseanonymousehost:welcome', { ok: true });
     broadcastState();
   });
 
@@ -695,14 +695,14 @@ io.on('connection', (socket) => {
 
   socket.on('player:action', (payload) => handleAction(socket, payload));
 
-  socket.on('host:start', () => {
+  socket.on('anonymouseanonymousehost:start', () => {
     if (STATE.players.length >= 2 && !STATE.hasStarted) {
       STATE.tableOpen = false;
       startHand();
     }
   });
-      // Replace your existing 'host:nextHandNow' handler with this:
-  socket.on('host:nextHandNow', () => {
+      // Replace your existing 'anonymouseanonymousehost:nextHandNow' handler with this:
+  socket.on('anonymouseanonymousehost:nextHandNow', () => {
     // kill any pending auto-next timer
     if (STATE.nextHandTimer) {
       clearTimeout(STATE.nextHandTimer);
@@ -732,17 +732,17 @@ io.on('connection', (socket) => {
     if (STATE.players.length >= 2) {
       startHand();              // ⬅️ fresh shuffle, new board+hole cards broadcast immediately
     } else {
-      // not enough players; fall back to lobby state on host UI
+      // not enough players; fall back to lobby state on anonymouseanonymousehost UI
       // (optional, usually not needed if your hardReset handles this elsewhere)
       // broadcastState();
     }
   });
 
-  socket.on('host:endGame', () => {
+  socket.on('anonymouseanonymousehost:endGame', () => {
     hardReset();
   });
 
-  socket.on('host:removePlayer', (playerId) => {
+  socket.on('anonymouseanonymousehost:removePlayer', (playerId) => {
     removePlayerById(playerId);
   });
 
@@ -776,6 +776,6 @@ app.get('/latest-log', (req, res) => {
 /* --------------------------------- Listen --------------------------------- */
 server.listen(PORT, () => {
   console.log(`Poker table server listening on http://0.0.0.0:${PORT}`);
-  console.log(`Host UI:   http://<server-ip>:${PORT}/host.html`);
+  console.log(`anonymouseanonymousehost UI:   http://<server-ip>:${PORT}/anonymouseanonymousehost.html`);
   console.log(`Players:   http://<server-ip>:${PORT}/player.html`);
 });
