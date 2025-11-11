@@ -2,13 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Poker anonymousehost</title>
+  <title>Poker test123host</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="container">
   <div class="card">
-    <h1>Texas Hold’em — anonymousehost</h1>
+    <h1>Texas Hold’em — test123host</h1>
     <p class="small">Share this URL with players: <span class="badge" id="joinUrl"></span></p>
     <div class="row" style="margin-top:12px">
       <div class="col">
@@ -50,14 +50,14 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  socket.emit('anonymousehost:join');
+  socket.emit('test123host:join');
 
-  const joinUrl = `${location.protocol}//${location.anonymousehost}/player.html`;
+  const joinUrl = `${location.protocol}//${location.test123host}/player.html`;
   document.getElementById('joinUrl').textContent = joinUrl;
 
   const el = id => document.getElementById(id);
 
-  socket.on('anonymousehost:welcome', () => {});
+  socket.on('test123host:welcome', () => {});
   socket.on('state:update', (s) => {
     el('handId').textContent = s.handId;
     el('stage').textContent = s.stage;
@@ -67,7 +67,7 @@
     el('minRaise').textContent = s.minRaiseTo;
     el('community').textContent = s.community.length ? s.community.join(' ') : '—';
 
-    // Render players (full info for anonymousehost)
+    // Render players (full info for test123host)
     const list = el('players');
     list.innerHTML = '';
     s.players.forEach((p,i) => {
@@ -98,7 +98,7 @@
       }).join('');
     }
 
-    // Allow anonymousehost to remove players only between hands if desired
+    // Allow test123host to remove players only between hands if desired
     const listBtns = s.players.map(p =>
       `<li>${p.name} – ${p.stack}
         ${(s.waitingForNextHand || s.inDelay) ? `<button onclick="remove('${p.id}')">Remove</button>` : ''}
@@ -108,14 +108,14 @@
   });
 
   function remove(id) {
-    socket.emit('anonymousehost:removePlayer', id);
+    socket.emit('test123host:removePlayer', id);
   }
 
-  document.getElementById('startBtn').onclick = () => socket.emit('anonymousehost:start');
-  document.getElementById('nextHandBtn').onclick = () => socket.emit('anonymousehost:nextHandNow');
+  document.getElementById('startBtn').onclick = () => socket.emit('test123host:start');
+  document.getElementById('nextHandBtn').onclick = () => socket.emit('test123host:nextHandNow');
   document.getElementById('endGameBtn').onclick = () => {           // NEW
     if (confirm('End the current game and clear all players?')) {
-      socket.emit('anonymousehost:endGame');
+      socket.emit('test123host:endGame');
     }
   };
 </script>
