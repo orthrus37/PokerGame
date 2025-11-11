@@ -96,7 +96,7 @@
     others.innerHTML = '';
     (s.others || []).forEach(o => {
       const row = document.createElement('div');
-      const isActive = s.currentPlayerId === o.id; // ✅ highlight if it's their turn
+      const isActive = s.currentPlayerId === o.id;
       row.className = 'player-row';
       row.style.background = isActive ? 'rgba(0,255,0,0.2)' : '';
       row.style.border = isActive ? '2px solid #0f0' : '1px solid #444';
@@ -110,7 +110,6 @@
       others.appendChild(row);
     });
 
-    // Enable actions only on your turn and if you're still in the hand
     const myTurn = !!(s.currentPlayerId && s.me && s.currentPlayerId === s.me.id);
     const iAmIn = me && me.inHand && !me.folded && me.stack >= 0;
     const enable = (!!myTurn && !!iAmIn && (s.stage !== 'lobby' && s.stage !== 'showdown'));
@@ -120,7 +119,6 @@
     el('callBtn').disabled = !enable;
     el('raiseBtn').disabled = !enable;
 
-    // ✅ Disable "Check" if my bet < highest active bet
     if (enable && me) {
       const activeBets = s.players.filter(p => p.inHand && !p.folded).map(p => p.bet);
       const maxBet = activeBets.length ? Math.max(...activeBets) : 0;
