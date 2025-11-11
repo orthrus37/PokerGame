@@ -509,47 +509,63 @@ function handleAction(socket, { action, amount }) {
 
 /* --------------------- Turn rotation & stage advance ---------------------- */
 function turnRotateOrAdvance() {
-  const alive = STATE.players.filter(pp => pp.inHand && !pp.folded);
+  const alive = STATE.players.filter(p => p.inHand && !p.folded);
   if (alive.length <= 1) {
     STATE.stage = 'showdown';
-    finishHand();
-    return;
+    return safeCall('finishHand', () => finishHand());
   }
 
-  const activeBets = STATE.players
-    .filter(p => p.inHand && !p.folded && !p.allIn)
-    .map(p => p.bet);
+  const maxBet = Math.max(...STATE.players.map(p => p.bet || 0));
+  const canAct = STATE.players.filter(p => p.inHand && !p.folded && !p.allIn);
 
-  const maxBet = Math.max(...STATE.players.map(p => p.bet));
-  const allEqual = activeBets.length === 0 || activeBets.every(b => b === maxBet);
+  // No one left who can act -> advance street
+  if (canAct.length === 0) return safeCall('advanceStage', () => advanceStage());
 
-  if (STATE.hasBetOrRaise && allEqual) {
-    advanceStage();
-    return;
+  // Only one can act:
+  if (canAct.length === 1) {
+    const loneIdx = STATE.players.indexOf(canAct[0]);
+    // If already matched, advance; else give them the turn
+    if ((STATE.players[loneIdx].bet || 0) === maxBet) {
+      return safeCall('advanceStage', () => advanceStage());
+    }
+    STATE.currentPlayerIdx = loneIdx;
+    return safeCall('broadcastState', () => broadcastState());
   }
 
+  // If all current actors have matched the top bet and there has been a bet/raise, advance
+  const allMatched = canAct.every(p => (p.bet || 0) === maxBet);
+  if (STATE.hasBetOrRaise && allMatched) {
+    return safeCall('advanceStage', () => advanceStage());
+  }
+
+  // Rotate to next actionable player
   let nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
-  let safetyCount = 0;
-
+  let hops = 0;
   while (
-    safetyCount < STATE.players.length &&
-    (!STATE.players[nextIdx].inHand ||
-      STATE.players[nextIdx].folded ||
-      STATE.players[nextIdx].allIn)
+    hops < STATE.players.length &&
+    (nextIdx === -1 ||
+     !STATE.players[nextIdx].inHand ||
+     STATE.players[nextIdx].folded ||
+     STATE.players[nextIdx].allIn)
   ) {
-    nextIdx = nextActivePlayer(nextIdx);
-    safetyCount++;
+    nextIdx = nextActivePlayer(nextIdx === -1 ? STATE.currentPlayerIdx : nextIdx);
+    hops++;
   }
 
+  // Couldn’t find anyone -> advance
+  if (nextIdx === -1 || hops >= STATE.players.length) {
+    return safeCall('advanceStage', () => advanceStage());
+  }
+
+  // If we wrapped all the way back to first actor without any bet/raise, advance
   STATE.currentPlayerIdx = nextIdx;
-
   if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
-    advanceStage();
-    return;
+    return safeCall('advanceStage', () => advanceStage());
   }
 
-  broadcastState();
+  return safeCall('broadcastState', () => broadcastState());
 }
+
 
 /* ------------------------------ Hard reset -------------------------------- */
 function hardReset() {
