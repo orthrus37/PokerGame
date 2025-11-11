@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => {
   res.send(`
     <h2>Poker Table is running</h2>
-    <p><a href="/anonymouseanonymouseanonymousehost.html">anonymouseanonymousehost UI</a> | <a href="/player.html">Player UI</a></p>
+    <p><a href="/anonymouseanonymousehost.html">anonymouseanonymousehost UI</a> | <a href="/player.html">Player UI</a></p>
   `);
 });
 app.use(express.static(path.join(__dirname, 'public')));
