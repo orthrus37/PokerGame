@@ -51,8 +51,8 @@ const STATE = {
   hasBetOrRaise: false,
   lastRaiserIdx: -1,
 
-  nextHandTimer: null,           // NEW: store timer id for next hand
-  sidePotsPreview: []            // NEW: live breakdown based on committed chips
+  nextHandTimer: null,              // timer id for next hand
+  sidePotsPreview: []               // live (non-mutating) breakdown for host UI
 };
 
 /* ------------------------------- Utilities -------------------------------- */
@@ -165,13 +165,11 @@ function stacksSnapshotEvent(label) {
   logEvent({ event: label, player: null });
 }
 
-/* -------------------------- Side pots (core) ------------------------------ */
-// Build pots from committed amounts. If capToStatePot=true, last pot adjusts to STATE.pot.
-function buildSidePots(capToStatePot = false) {
-  const contenders = STATE.players
-    .filter(p => p.inHand && !p.folded && p.committed > 0);
-
-  if (contenders.length === 0) return [];
+/* ---------------------- Side pots: preview & showdown --------------------- */
+/** PREVIEW (non-mutating): show only contested pots (eligibleCount >= 2). */
+function buildSidePotsPreview() {
+  const contenders = STATE.players.filter(p => p.inHand && !p.folded && p.committed > 0);
+  if (!contenders.length) return [];
 
   const levels = Array.from(new Set(contenders.map(p => p.committed))).sort((a,b)=>a-b);
 
@@ -179,26 +177,48 @@ function buildSidePots(capToStatePot = false) {
   let prev = 0;
   for (const lvl of levels) {
     const eligible = STATE.players.filter(p => p.inHand && !p.folded && p.committed >= lvl);
-    if (eligible.length === 0) continue;
-
-    const slice = (lvl - prev) * eligible.length;
-    if (slice > 0) {
-      pots.push({
-        amount: slice,
-        eligibleIds: new Set(eligible.map(p => p.id))
-      });
+    const band = Math.max(0, lvl - prev);
+    if (band > 0 && eligible.length >= 2) {
+      pots.push({ amount: band * eligible.length, eligibleCount: eligible.length });
     }
     prev = lvl;
   }
-
-  if (capToStatePot) {
-    const total = pots.reduce((s,p)=>s+p.amount,0);
-    const diff = STATE.pot - total;
-    if (Math.abs(diff) > 0 && pots.length) {
-      pots[pots.length - 1].amount += diff;
-    }
-  }
   return pots;
+}
+
+/**
+ * SHOWDOWN (mutating): builds main + side pots AND computes refunds for unmatched chips.
+ * Returns { pots: [{amount, eligibleIds}], totalRefund, refundsById }.
+ */
+function buildSidePotsWithRefunds() {
+  const active = STATE.players.filter(p => p.inHand && !p.folded && p.committed > 0);
+  const pots = [];
+  const refundsById = new Map();
+  let totalRefund = 0;
+
+  if (!active.length) return { pots, totalRefund, refundsById };
+
+  const levels = Array.from(new Set(active.map(p => p.committed))).sort((a,b)=>a-b);
+
+  let prev = 0;
+  for (const lvl of levels) {
+    const eligible = STATE.players.filter(p => p.inHand && !p.folded && p.committed >= lvl);
+    const band = Math.max(0, lvl - prev);
+
+    if (band > 0) {
+      if (eligible.length >= 2) {
+        pots.push({ amount: band * eligible.length, eligibleIds: new Set(eligible.map(p => p.id)) });
+      } else if (eligible.length === 1) {
+        // Unmatched overage -> REFUND to the sole highest contributor
+        const sole = eligible[0];
+        const r = (refundsById.get(sole.id) || 0) + band;
+        refundsById.set(sole.id, r);
+        totalRefund += band;
+      }
+    }
+    prev = lvl;
+  }
+  return { pots, totalRefund, refundsById };
 }
 
 function evaluateHandsAndPick(contenders) {
@@ -211,7 +231,7 @@ function evaluateHandsAndPick(contenders) {
 
 function awardPot(pot, results) {
   const elig = results.filter(r => pot.eligibleIds.has(r.player.id));
-  if (elig.length === 0) return pot.amount;
+  if (elig.length === 0) return pot.amount; // nothing to do
   const winners = Hand.winners(elig.map(r => r.hand));
   const winnerPlayers = elig.filter(r => winners.includes(r.hand));
 
@@ -237,12 +257,8 @@ function awardPot(pot, results) {
   return 0;
 }
 
-function updateSidePotsPreview() {                 // NEW: live preview for Host UI
-  const pots = buildSidePots(false); // don't cap to STATE.pot mid-street
-  STATE.sidePotsPreview = pots.map(p => ({
-    amount: p.amount,
-    eligibleCount: p.eligibleIds.size
-  }));
+function updateSidePotsPreview() {
+  STATE.sidePotsPreview = buildSidePotsPreview();
 }
 
 /* --------------------------- Broadcast state ------------------------------ */
@@ -256,7 +272,7 @@ function sanitizeForHost() {
     currentPlayerIdx: STATE.currentPlayerIdx,
     currentPlayerId: STATE.players[STATE.currentPlayerIdx]?.id || null,
     minRaiseTo: STATE.minRaiseTo,
-    sidePots: STATE.sidePotsPreview,                        // NEW
+    sidePots: STATE.sidePotsPreview,                        // preview only
     players: STATE.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -265,8 +281,8 @@ function sanitizeForHost() {
       inHand: p.inHand,
       folded: p.folded,
       bet: p.bet,
-      allIn: !!p.allIn,                                     // NEW
-      committed: p.committed,                               // NEW
+      allIn: !!p.allIn,
+      committed: p.committed,
       cards: p.cards
     }))
   };
@@ -293,7 +309,7 @@ function sanitizeForPlayer(idx) {
       cards: me.cards
     },
     others: STATE.players.map((p, i) => ({
-      id: p.id,                                            // NEW (so host highlight code in player UI works reliably)
+      id: p.id,
       name: p.name,
       seat: p.seat,
       stack: p.stack,
@@ -316,7 +332,7 @@ function postBlind(idx, amt) {
   const blind = Math.min(amt, p.stack);
   p.stack -= blind;
   p.bet = blind;
-  p.committed += blind;                                 // NEW
+  p.committed += blind;
   logEvent({ event: 'post_blind', player: p, action: 'blind', amount: blind });
 }
 function dealCommunity(n) {
@@ -329,9 +345,9 @@ function startHand() {
   STATE.players.forEach(p => {
     p.inHand = p.stack > 0;
     p.folded = false;
-    p.allIn = false; // reset
+    p.allIn = false;
     p.bet = 0;
-    p.committed = 0; // NEW
+    p.committed = 0;
     p.cards = [];
   });
 
@@ -366,7 +382,7 @@ function startHand() {
   STATE.hasBetOrRaise = false;
   STATE.lastRaiserIdx = -1;
 
-  updateSidePotsPreview();                              // NEW
+  updateSidePotsPreview();
   stacksSnapshotEvent('round_start_preflop');
   broadcastState();
 }
@@ -400,7 +416,7 @@ function advanceStage() {
   STATE.hasBetOrRaise = false;
   STATE.lastRaiserIdx = -1;
 
-  updateSidePotsPreview();                              // NEW
+  updateSidePotsPreview();
   stacksSnapshotEvent(`round_start_${STATE.stage}`);
   broadcastState();
 }
@@ -413,14 +429,29 @@ function finishHand() {
   if (alive.length === 1) {
     alive[0].stack += STATE.pot;
     logEvent({ event: 'win_pot', player: alive[0], action: 'win', amount: STATE.pot });
+    STATE.pot = 0;
   } else if (alive.length > 1) {
-    // Build pots from committed and cap to actual STATE.pot just in case
-    const pots = buildSidePots(true);
-    const results = evaluateHandsAndPick(alive);
+    // Build pots and compute refunds for unmatched overages
+    const { pots, totalRefund, refundsById } = buildSidePotsWithRefunds();
 
-    for (const pot of pots) {
-      awardPot(pot, results);
+    // Apply refunds BEFORE awarding pots
+    if (totalRefund > 0) {
+      refundsById.forEach((amt, pid) => {
+        const pl = STATE.players.find(pp => pp.id === pid);
+        if (pl) {
+          pl.stack += amt;
+          logEvent({ event: 'refund_unmatched', player: pl, action: 'refund', amount: amt });
+        }
+      });
+      STATE.pot -= totalRefund;
+      if (STATE.pot < 0) STATE.pot = 0; // guard
     }
+
+    // Evaluate and award each contested pot
+    const results = evaluateHandsAndPick(alive);
+    for (const pot of pots) awardPot(pot, results);
+
+    STATE.pot = 0; // all distributed
   }
 
   // Auto-remove busted
@@ -430,8 +461,7 @@ function finishHand() {
     STATE.players = STATE.players.filter(p => p.stack > 0);
   }
 
-  STATE.pot = 0;
-  STATE.sidePotsPreview = [];                           // NEW: clear preview at end
+  STATE.sidePotsPreview = [];
 
   if (STATE.players.length >= 2) {
     if (STATE.nextHandTimer) clearTimeout(STATE.nextHandTimer);
@@ -455,7 +485,7 @@ function handleAction(socket, { action, amount }) {
   if (action === 'fold') {
     p.folded = true;
     logEvent({ event: 'player_action', player: p, action: 'fold', amount: 0 });
-    updateSidePotsPreview();                            // NEW
+    updateSidePotsPreview();
     turnRotateOrAdvance();
     return;
   }
@@ -463,7 +493,7 @@ function handleAction(socket, { action, amount }) {
   if (action === 'check') {
     if (toCall === 0) {
       logEvent({ event: 'player_action', player: p, action: 'check', amount: 0 });
-      updateSidePotsPreview();                          // NEW
+      updateSidePotsPreview();
       turnRotateOrAdvance();
     }
     return;
@@ -473,24 +503,24 @@ function handleAction(socket, { action, amount }) {
     const callAmt = Math.min(toCall, p.stack);
     p.stack -= callAmt;
     p.bet += callAmt;
-    p.committed += callAmt;                             // NEW
+    p.committed += callAmt;
     if (p.stack === 0) p.allIn = true;
 
     logEvent({ event: 'player_action', player: p, action: p.allIn ? 'allin_call' : 'call', amount: callAmt });
-    updateSidePotsPreview();                            // NEW
+    updateSidePotsPreview();
     turnRotateOrAdvance();
     return;
   }
 
   if (action === 'bet' || action === 'raise') {
     const minRaise = Math.max(STATE.minRaiseTo, BIG_BLIND);
-    const betAmt = Math.max(minRaise, Number(amount || 0));
+    const betAmt = Math.max(minRaise, Number(amount || 0));     // interpret as "raise to"
     const toPay = toCall + betAmt;
-    const pay = Math.min(toPay, p.stack);
+    const pay = Math.min(toPay, p.stack);                       // capped by stack
 
     p.stack -= pay;
     p.bet += pay;
-    p.committed += pay;                                 // NEW
+    p.committed += pay;
     if (p.stack === 0) p.allIn = true;
 
     STATE.minRaiseTo = betAmt;
@@ -504,7 +534,7 @@ function handleAction(socket, { action, amount }) {
       amount: pay
     });
 
-    updateSidePotsPreview();                            // NEW
+    updateSidePotsPreview();
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
     return;
@@ -558,7 +588,7 @@ function turnRotateOrAdvance() {
 }
 
 /* ------------------------------ Hard reset -------------------------------- */
-function hardReset() {                                   // NEW
+function hardReset() {
   if (STATE.nextHandTimer) {
     clearTimeout(STATE.nextHandTimer);
     STATE.nextHandTimer = null;
@@ -614,13 +644,13 @@ io.on('connection', (socket) => {
       folded: false,
       bet: 0,
       cards: [],
-      allIn: false,            // NEW
-      committed: 0             // NEW
+      allIn: false,
+      committed: 0
     };
 
     STATE.players.push(player);
     logEvent({ event: 'player_join', player });
-    updateSidePotsPreview();  // NEW
+    updateSidePotsPreview();
     broadcastState();
     socket.emit('player:accepted', { id: player.id });
   });
@@ -641,7 +671,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('host:endGame', () => {                     // NEW: end game + clear table
+  socket.on('host:endGame', () => {
     hardReset();
   });
 
@@ -659,7 +689,7 @@ io.on('connection', (socket) => {
       p.inHand = false;
       p.folded = true;
       p.socketId = null;
-      updateSidePotsPreview();                          // NEW
+      updateSidePotsPreview();
       broadcastState();
     }
   });
@@ -684,3 +714,4 @@ server.listen(PORT, () => {
   console.log(`Host UI:   http://<server-ip>:${PORT}/host.html`);
   console.log(`Players:   http://<server-ip>:${PORT}/player.html`);
 });
+
