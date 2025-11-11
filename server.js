@@ -120,10 +120,12 @@ function initLogFile() {
 }
 function logEvent({ event, player, action = '', amount = 0 }) {
   if (!STATE.actionLogFile) initLogFile();
+
   const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
   const playerHand = player && player.cards && player.cards.length ? player.cards.join(' ') : '';
   const playerStack = player ? player.stack : '';
   const communityStr = STATE.community && STATE.community.length ? STATE.community.join(' ') : '';
+
   const line = [
     new Date().toISOString(),
     STATE.handId,
@@ -139,6 +141,7 @@ function logEvent({ event, player, action = '', amount = 0 }) {
     safeCsv(communityStr),
     safeCsv(stacksSnapshot)
   ].join(',') + '\n';
+
   fs.appendFileSync(STATE.actionLogFile, line);
 }
 function stacksSnapshotEvent(label) { logEvent({ event: label, player: null }); }
@@ -149,7 +152,7 @@ function stacksSnapshotEvent(label) { logEvent({ event: label, player: null }); 
  * show eligibility count using only non-folded players.
  */
 function buildSidePotsPreview() {
-  const contributors = STATE.players.filter(p => p.committed > 0);
+  const contributors = STATE.players.filter(p => (p.committed || 0) > 0);
   if (!contributors.length) return [];
   const levels = Array.from(new Set(contributors.map(p => p.committed))).sort((a,b)=>a-b);
 
@@ -158,8 +161,8 @@ function buildSidePotsPreview() {
   for (const lvl of levels) {
     const band = Math.max(0, lvl - prev);
     if (band === 0) { prev = lvl; continue; }
-    const contributorsCount = STATE.players.filter(p => p.committed >= lvl).length; // includes folded
-    const eligibleCount = STATE.players.filter(p => p.inHand && !p.folded && p.committed >= lvl).length;
+    const contributorsCount = STATE.players.filter(p => (p.committed || 0) >= lvl).length; // includes folded
+    const eligibleCount = STATE.players.filter(p => p.inHand && !p.folded && (p.committed || 0) >= lvl).length;
     if (eligibleCount >= 2) pots.push({ amount: band * contributorsCount, eligibleCount });
     prev = lvl;
   }
@@ -172,7 +175,7 @@ function buildSidePotsPreview() {
  * Refund unmatched overages when exactly one contributor reaches a band.
  */
 function buildSidePotsWithRefunds() {
-  const contributors = STATE.players.filter(p => p.committed > 0);
+  const contributors = STATE.players.filter(p => (p.committed || 0) > 0);
   const pots = [];
   const refundsById = new Map();
   let totalRefund = 0;
@@ -186,7 +189,7 @@ function buildSidePotsWithRefunds() {
     const band = Math.max(0, lvl - prev);
     if (band === 0) { prev = lvl; continue; }
 
-    const contribs = STATE.players.filter(p => p.committed >= lvl); // includes folded
+    const contribs = STATE.players.filter(p => (p.committed || 0) >= lvl); // includes folded
     const cCount = contribs.length;
 
     if (cCount === 1) {
@@ -195,14 +198,13 @@ function buildSidePotsWithRefunds() {
       refundsById.set(sole.id, (refundsById.get(sole.id) || 0) + band);
       totalRefund += band;
     } else {
-      const eligible = STATE.players.filter(p => p.inHand && !p.folded && p.committed >= lvl);
+      const eligible = STATE.players.filter(p => p.inHand && !p.folded && (p.committed || 0) >= lvl);
       if (eligible.length >= 1) {
         pots.push({ amount: band * cCount, eligibleIds: new Set(eligible.map(p => p.id)) });
       } else {
-        // edge case: no one eligible; refund equally to contributors
-        const each = band; // since amount = band * cCount; splitting equally => band each
+        // edge case: no one eligible; refund equally to contributors (band each)
         contribs.forEach(c => {
-          refundsById.set(c.id, (refundsById.get(c.id) || 0) + each);
+          refundsById.set(c.id, (refundsById.get(c.id) || 0) + band);
         });
         totalRefund += band * cCount;
       }
@@ -223,7 +225,7 @@ function evaluateHandsAndPick(contenders) {
 
 function awardPot(pot, results) {
   const elig = results.filter(r => pot.eligibleIds.has(r.player.id));
-  if (elig.length === 0) return pot.amount; // nothing awarded; carry (shouldn't happen in practice)
+  if (elig.length === 0) return pot.amount; // nothing awarded; carry (shouldn't happen)
   const winners = Hand.winners(elig.map(r => r.hand));
   const winnerPlayers = elig.filter(r => winners.includes(r.hand));
 
@@ -237,9 +239,7 @@ function awardPot(pot, results) {
 
   if (remainder > 0) {
     const ordered = winnerPlayers.slice().sort((a,b) => a.player.seat - b.player.seat);
-    for (let i = 0; i < remainder; i++) {
-      ordered[i % ordered.length].player.stack += 1;
-    }
+    for (let i = 0; i < remainder; i++) ordered[i % ordered.length].player.stack += 1;
   }
   return 0;
 }
@@ -263,7 +263,7 @@ function sanitizeForHost() {
     players: STATE.players.map(p => ({
       id: p.id, name: p.name, seat: p.seat, stack: p.stack,
       inHand: p.inHand, folded: p.folded, bet: p.bet, allIn: !!p.allIn,
-      committed: p.committed, cards: p.cards
+      committed: p.committed || 0, cards: p.cards
     }))
   };
 }
@@ -287,7 +287,15 @@ function sanitizeForPlayer(idx) {
   };
 }
 function broadcastState() {
-  io.to('host').emit('state:update', sanitizeForHost());
+  const safeIdx = (STATE.currentPlayerIdx >= 0 && STATE.currentPlayerIdx < STATE.players.length)
+    ? STATE.currentPlayerIdx : -1;
+
+  const hostPayload = { ...sanitizeForHost(),
+    currentPlayerIdx: safeIdx,
+    currentPlayerId: safeIdx === -1 ? null : STATE.players[safeIdx].id
+  };
+  io.to('host').emit('state:update', hostPayload);
+
   STATE.players.forEach((p, idx) => {
     if (p.socketId) io.to(p.socketId).emit('state:update', sanitizeForPlayer(idx));
   });
@@ -446,7 +454,7 @@ function handleAction(socket, { action, amount }) {
   const p = STATE.players[idx];
   if (!p.inHand || p.folded) return;
 
-  const toCall = Math.max(...STATE.players.map(pl => pl.bet)) - p.bet;
+  const toCall = Math.max(...STATE.players.map(pl => pl.bet || 0)) - (p.bet || 0);
 
   if (action === 'fold') {
     p.folded = true;
@@ -468,8 +476,8 @@ function handleAction(socket, { action, amount }) {
   if (action === 'call') {
     const callAmt = Math.min(toCall, p.stack);
     p.stack -= callAmt;
-    p.bet += callAmt;
-    p.committed += callAmt;
+    p.bet = (p.bet || 0) + callAmt;
+    p.committed = (p.committed || 0) + callAmt;
     if (p.stack === 0) p.allIn = true;
 
     logEvent({ event: 'player_action', player: p, action: p.allIn ? 'allin_call' : 'call', amount: callAmt });
@@ -485,8 +493,8 @@ function handleAction(socket, { action, amount }) {
     const pay = Math.min(toPay, p.stack); // capped at stack
 
     p.stack -= pay;
-    p.bet += pay;
-    p.committed += pay;
+    p.bet = (p.bet || 0) + pay;
+    p.committed = (p.committed || 0) + pay;
     if (p.stack === 0) p.allIn = true;
 
     STATE.minRaiseTo = raiseTo;
@@ -512,33 +520,39 @@ function turnRotateOrAdvance() {
   const alive = STATE.players.filter(p => p.inHand && !p.folded);
   if (alive.length <= 1) {
     STATE.stage = 'showdown';
-    return safeCall('finishHand', () => finishHand());
+    finishHand();
+    return;
   }
 
   const maxBet = Math.max(...STATE.players.map(p => p.bet || 0));
   const canAct = STATE.players.filter(p => p.inHand && !p.folded && !p.allIn);
 
   // No one left who can act -> advance street
-  if (canAct.length === 0) return safeCall('advanceStage', () => advanceStage());
+  if (canAct.length === 0) {
+    advanceStage();
+    return;
+  }
 
-  // Only one can act:
+  // Only one can act
   if (canAct.length === 1) {
     const loneIdx = STATE.players.indexOf(canAct[0]);
-    // If already matched, advance; else give them the turn
     if ((STATE.players[loneIdx].bet || 0) === maxBet) {
-      return safeCall('advanceStage', () => advanceStage());
+      advanceStage();
+      return;
     }
     STATE.currentPlayerIdx = loneIdx;
-    return safeCall('broadcastState', () => broadcastState());
+    broadcastState();
+    return;
   }
 
-  // If all current actors have matched the top bet and there has been a bet/raise, advance
+  // If someone has bet/raised and all non-all-in players matched -> advance
   const allMatched = canAct.every(p => (p.bet || 0) === maxBet);
   if (STATE.hasBetOrRaise && allMatched) {
-    return safeCall('advanceStage', () => advanceStage());
+    advanceStage();
+    return;
   }
 
-  // Rotate to next actionable player
+  // Otherwise rotate to the next actionable player
   let nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
   let hops = 0;
   while (
@@ -552,20 +566,21 @@ function turnRotateOrAdvance() {
     hops++;
   }
 
-  // Couldn’t find anyone -> advance
   if (nextIdx === -1 || hops >= STATE.players.length) {
-    return safeCall('advanceStage', () => advanceStage());
+    advanceStage();
+    return;
   }
 
-  // If we wrapped all the way back to first actor without any bet/raise, advance
   STATE.currentPlayerIdx = nextIdx;
+
+  // If no bet/raise this street and we looped back to first actor -> advance
   if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
-    return safeCall('advanceStage', () => advanceStage());
+    advanceStage();
+    return;
   }
 
-  return safeCall('broadcastState', () => broadcastState());
+  broadcastState();
 }
-
 
 /* ------------------------------ Hard reset -------------------------------- */
 function hardReset() {
@@ -642,10 +657,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('host:nextHandNow', () => {
-    if (STATE.stage !== 'lobby') {
-      STATE.stage = 'showdown';
-      finishHand();
+    if (STATE.stage === 'lobby') {
+      if (STATE.players.length >= 2) {
+        STATE.tableOpen = false;
+        startHand();
+      }
+      return;
     }
+    STATE.stage = 'showdown';
+    finishHand();
   });
 
   socket.on('host:endGame', () => {
@@ -653,7 +673,6 @@ io.on('connection', (socket) => {
   });
 
   socket.on('host:removePlayer', (playerId) => {
-    // allow removal any time between hands or if host wants
     removePlayerById(playerId);
   });
 
