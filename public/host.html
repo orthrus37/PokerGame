@@ -20,17 +20,26 @@
           <div><span class="label">Acting</span> <span id="acting" class="badge">—</span></div>
           <div><span class="label">Min Raise To</span> <span id="minRaise" class="badge">20</span></div>
           <div><span class="label">Community</span> <div id="community" class="community">—</div></div>
-          <div>
+
+          <!-- NEW: Pot breakdown preview -->
+          <div style="margin-top:8px;">
+            <span class="label">Pot Breakdown (preview)</span>
+            <div id="sidePots" class="list small">—</div>
+          </div>
+
+          <div style="margin-top:10px;">
             <button id="startBtn">Start Game</button>
             <button id="nextHandBtn">Force Next Hand</button>
-            <div id="playerList"></div>
+            <button id="endGameBtn" style="background:#a00;color:#fff;">End Game (Reset)</button> <!-- NEW -->
+            <div id="playerList" style="margin-top:8px;"></div>
             <div style="margin-top:10px;">
-            <a href="/latest-log" id="logLink" target="_blank" class="badge" 
-             style="text-decoration:none;">📄 Download Log CSV</a>
+              <a href="/latest-log" id="logLink" target="_blank" class="badge" 
+                 style="text-decoration:none;">📄 Download Log CSV</a>
             </div>
           </div>
         </div>
       </div>
+
       <div class="col">
         <h3>Players</h3>
         <div id="players" class="list"></div>
@@ -58,6 +67,7 @@
     el('minRaise').textContent = s.minRaiseTo;
     el('community').textContent = s.community.length ? s.community.join(' ') : '—';
 
+    // Render players (full info for host)
     const list = el('players');
     list.innerHTML = '';
     s.players.forEach((p,i) => {
@@ -67,6 +77,7 @@
         <div>
           <div><strong>${p.name}</strong> <span class="small">[seat ${p.seat}]</span></div>
           <div class="small">Cards: <span class="cards">${p.cards.join(' ')||'—'}</span></div>
+          <div class="small">Committed: ${p.committed} • ${p.allIn ? 'ALL-IN' : (p.inHand ? 'IN HAND' : 'OUT')}</div>
         </div>
         <div>
           <div class="badge">Stack: ${p.stack}</div>
@@ -74,25 +85,39 @@
         </div>
       `;
       list.appendChild(row);
-    }); 
-  });
-    socket.on('state:update', (s) => {
-      const list = s.players.map(p =>
-        `<li>${p.name} – ${p.stack}
-          ${(s.waitingForNextHand || s.inDelay)
-        ? `<button onclick="remove('${p.id}')">Remove</button>` : ''}
-       </li>`
-      ).join('');
-      document.getElementById('playerList').innerHTML = `<ul>${list}</ul>`;
+    });
+
+    // Render pot breakdown preview
+    const sp = el('sidePots');
+    if (!s.sidePots || !s.sidePots.length) {
+      sp.textContent = '—';
+    } else {
+      sp.innerHTML = s.sidePots.map((p, idx) => {
+        const title = idx === 0 ? 'Main' : `Side ${idx}`;
+        return `<div>${title}: <strong>${p.amount}</strong> <span class="small">(eligible: ${p.eligibleCount})</span></div>`;
+      }).join('');
+    }
+
+    // Allow host to remove players only between hands if desired
+    const listBtns = s.players.map(p =>
+      `<li>${p.name} – ${p.stack}
+        ${(s.waitingForNextHand || s.inDelay) ? `<button onclick="remove('${p.id}')">Remove</button>` : ''}
+      </li>`
+    ).join('');
+    document.getElementById('playerList').innerHTML = `<ul>${listBtns}</ul>`;
   });
 
-function remove(id) {
-  socket.emit('host:removePlayer', id);
-}
-
+  function remove(id) {
+    socket.emit('host:removePlayer', id);
+  }
 
   document.getElementById('startBtn').onclick = () => socket.emit('host:start');
   document.getElementById('nextHandBtn').onclick = () => socket.emit('host:nextHandNow');
+  document.getElementById('endGameBtn').onclick = () => {           // NEW
+    if (confirm('End the current game and clear all players?')) {
+      socket.emit('host:endGame');
+    }
+  };
 </script>
 </body>
 </html>
