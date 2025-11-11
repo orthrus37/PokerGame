@@ -1,4 +1,4 @@
-/* server.js — Orthrus Poker Table (Texas Hold'em) */
+/* server.js — Orthrus Poker Table (Texas Hold'em) — non-blocking logging, side pots, watchdog */
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -28,7 +28,10 @@ const SMALL_BLIND = 25;
 const BIG_BLIND = 50;
 
 const SUITS = ['♠','♥','♦','♣'];
-const RANKS = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+
+// Watchdog: if no action/advance for this many ms, auto-advance stage
+const WATCHDOG_MS = 45000;
 
 /* --------------------------------- State --------------------------------- */
 const STATE = {
@@ -43,7 +46,6 @@ const STATE = {
   pot: 0,
   minRaiseTo: BIG_BLIND,
   tableOpen: true,
-  actionLogFile: null,
   hasStarted: false,
 
   // per-street flow control
@@ -51,9 +53,84 @@ const STATE = {
   hasBetOrRaise: false,
   lastRaiserIdx: -1,
 
+  // timers
   nextHandTimer: null,
+  watchdogTimer: null,
+
+  // UI previews
   sidePotsPreview: []
 };
+
+/* ------------------------------ Log Writer --------------------------------
+   Non-blocking CSV logging using a single write stream + queue.
+--------------------------------------------------------------------------- */
+const LOG = {
+  file: null,
+  stream: null,
+  queue: [],
+  writing: false
+};
+
+function ensureLog() {
+  if (LOG.stream) return;
+  const dir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+  const filename = `actions-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  const filepath = path.join(dir, filename);
+  LOG.file = filepath;
+  LOG.stream = fs.createWriteStream(filepath, { flags: 'a' });
+  const header = [
+    'timestamp','handId','stage','event','playerId','playerName',
+    'action','amount','pot','playerStack','playerHand','community','stacksSnapshot'
+  ].join(',') + '\n';
+  LOG.stream.write(header);
+  console.log('🪶 Log file:', filepath);
+}
+
+function safeCsv(s) { return `"${String(s).replace(/"/g, '""')}"`; }
+
+function logEvent({ event, player, action = '', amount = 0 }) {
+  ensureLog();
+  const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
+  const playerHand = player && player.cards && player.cards.length ? player.cards.join(' ') : '';
+  const playerStack = player ? player.stack : '';
+  const communityStr = STATE.community && STATE.community.length ? STATE.community.join(' ') : '';
+
+  const line = [
+    new Date().toISOString(),
+    STATE.handId,
+    STATE.stage,
+    event,
+    player ? player.id : '',
+    player ? safeCsv(player.name) : '',
+    action,
+    amount,
+    STATE.pot,
+    playerStack,
+    safeCsv(playerHand),
+    safeCsv(communityStr),
+    safeCsv(stacksSnapshot)
+  ].join(',') + '\n';
+
+  LOG.queue.push(line);
+  drainLog();
+}
+
+function drainLog() {
+  if (LOG.writing || !LOG.stream) return;
+  if (!LOG.queue.length) return;
+  LOG.writing = true;
+  const chunk = LOG.queue.join('');
+  LOG.queue.length = 0;
+  LOG.stream.write(chunk, (err) => {
+    LOG.writing = false;
+    if (err) console.error('Log write error:', err);
+    // continue draining if new items arrived while writing
+    if (LOG.queue.length) drainLog();
+  });
+}
+
+function stacksSnapshotEvent(label) { logEvent({ event: label, player: null }); }
 
 /* ------------------------------- Utilities -------------------------------- */
 function freshDeck() {
@@ -92,8 +169,6 @@ function collectBetsToPot() {
   STATE.pot += STATE.players.reduce((s, p) => s + (p.bet || 0), 0);
   STATE.players.forEach(p => { p.bet = 0; });
 }
-function safeCsv(s) { return `"${String(s).replace(/"/g, '""')}"`; }
-
 function removePlayerById(playerId) {
   const idx = STATE.players.findIndex(p => p.id === playerId);
   if (idx !== -1) {
@@ -104,53 +179,7 @@ function removePlayerById(playerId) {
   }
 }
 
-/* -------------------------------- Logging --------------------------------- */
-function initLogFile() {
-  const dir = path.join(__dirname, 'logs');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-  const filename = `actions-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
-  const filepath = path.join(dir, filename);
-  const header = [
-    'timestamp','handId','stage','event','playerId','playerName',
-    'action','amount','pot','playerStack','playerHand','community','stacksSnapshot'
-  ].join(',') + '\n';
-  fs.writeFileSync(filepath, header);
-  STATE.actionLogFile = filepath;
-  console.log('🪶 Log file created at:', filepath);
-}
-function logEvent({ event, player, action = '', amount = 0 }) {
-  if (!STATE.actionLogFile) initLogFile();
-
-  const stacksSnapshot = STATE.players.map(p => `${p.name}:${p.stack}`).join('|');
-  const playerHand = player && player.cards && player.cards.length ? player.cards.join(' ') : '';
-  const playerStack = player ? player.stack : '';
-  const communityStr = STATE.community && STATE.community.length ? STATE.community.join(' ') : '';
-
-  const line = [
-    new Date().toISOString(),
-    STATE.handId,
-    STATE.stage,
-    event,
-    player ? player.id : '',
-    player ? safeCsv(player.name) : '',
-    action,
-    amount,
-    STATE.pot,
-    playerStack,
-    safeCsv(playerHand),
-    safeCsv(communityStr),
-    safeCsv(stacksSnapshot)
-  ].join(',') + '\n';
-
-  fs.appendFileSync(STATE.actionLogFile, line);
-}
-function stacksSnapshotEvent(label) { logEvent({ event: label, player: null }); }
-
 /* ---------------------- Side pots: preview & showdown --------------------- */
-/**
- * Preview (non-mutating): build bands using ALL contributors (folded included) for amount;
- * show eligibility count using only non-folded players.
- */
 function buildSidePotsPreview() {
   const contributors = STATE.players.filter(p => (p.committed || 0) > 0);
   if (!contributors.length) return [];
@@ -169,11 +198,6 @@ function buildSidePotsPreview() {
   return pots;
 }
 
-/**
- * Showdown (mutating): banded pots use ALL contributors for amount;
- * eligible set uses only non-folded players with committed >= level.
- * Refund unmatched overages when exactly one contributor reaches a band.
- */
 function buildSidePotsWithRefunds() {
   const contributors = STATE.players.filter(p => (p.committed || 0) > 0);
   const pots = [];
@@ -193,7 +217,6 @@ function buildSidePotsWithRefunds() {
     const cCount = contribs.length;
 
     if (cCount === 1) {
-      // unmatched overage -> refund this band to the sole contributor
       const sole = contribs[0];
       refundsById.set(sole.id, (refundsById.get(sole.id) || 0) + band);
       totalRefund += band;
@@ -202,7 +225,7 @@ function buildSidePotsWithRefunds() {
       if (eligible.length >= 1) {
         pots.push({ amount: band * cCount, eligibleIds: new Set(eligible.map(p => p.id)) });
       } else {
-        // edge case: no one eligible; refund equally to contributors (band each)
+        // no eligible: refund equally (band each)
         contribs.forEach(c => {
           refundsById.set(c.id, (refundsById.get(c.id) || 0) + band);
         });
@@ -215,7 +238,7 @@ function buildSidePotsWithRefunds() {
   return { pots, refundsById, totalRefund };
 }
 
-function evaluateHandsAndPick(contenders) {
+function evaluateHands(contenders) {
   return contenders.map(p => {
     const allCards = [...STATE.community, ...p.cards];
     const hand = Hand.solve(allCards);
@@ -225,7 +248,7 @@ function evaluateHandsAndPick(contenders) {
 
 function awardPot(pot, results) {
   const elig = results.filter(r => pot.eligibleIds.has(r.player.id));
-  if (elig.length === 0) return pot.amount; // nothing awarded; carry (shouldn't happen)
+  if (elig.length === 0) return pot.amount;
   const winners = Hand.winners(elig.map(r => r.hand));
   const winnerPlayers = elig.filter(r => winners.includes(r.hand));
 
@@ -301,6 +324,25 @@ function broadcastState() {
   });
 }
 
+/* ------------------------------ Watchdog ---------------------------------- */
+function resetWatchdog(tag = '') {
+  if (STATE.watchdogTimer) clearTimeout(STATE.watchdogTimer);
+  // Only arm during betting streets
+  if (['preflop','flop','turn','river'].includes(STATE.stage)) {
+    STATE.watchdogTimer = setTimeout(() => {
+      logEvent({ event: 'watchdog_fire', player: null, action: tag, amount: 0 });
+      // If anyone can act, advance; else showdown
+      const canAct = STATE.players.filter(p => p.inHand && !p.folded && !p.allIn);
+      if (canAct.length === 0) {
+        advanceStage();
+      } else {
+        // if stalled with actors, still advance the stage to unstick
+        advanceStage();
+      }
+    }, WATCHDOG_MS);
+  }
+}
+
 /* ------------------------------ Hand flow --------------------------------- */
 function postBlind(idx, amt) {
   const p = STATE.players[idx];
@@ -317,6 +359,9 @@ function dealCommunity(n) {
 }
 
 function startHand() {
+  if (STATE.nextHandTimer) { clearTimeout(STATE.nextHandTimer); STATE.nextHandTimer = null; }
+  if (STATE.watchdogTimer) { clearTimeout(STATE.watchdogTimer); STATE.watchdogTimer = null; }
+
   STATE.players.forEach(p => {
     p.inHand = p.stack > 0;
     p.folded = false;
@@ -360,6 +405,7 @@ function startHand() {
   updateSidePotsPreview();
   stacksSnapshotEvent('round_start_preflop');
   broadcastState();
+  resetWatchdog('startHand');
 }
 
 function advanceStage() {
@@ -394,9 +440,11 @@ function advanceStage() {
   updateSidePotsPreview();
   stacksSnapshotEvent(`round_start_${STATE.stage}`);
   broadcastState();
+  resetWatchdog('advanceStage');
 }
 
 function finishHand() {
+  if (STATE.watchdogTimer) { clearTimeout(STATE.watchdogTimer); STATE.watchdogTimer = null; }
   collectBetsToPot();
 
   const alive = STATE.players.filter(p => p.inHand && !p.folded);
@@ -408,7 +456,7 @@ function finishHand() {
   } else if (alive.length > 1) {
     const { pots, refundsById, totalRefund } = buildSidePotsWithRefunds();
 
-    // Apply refunds first
+    // refunds first
     if (totalRefund > 0) {
       refundsById.forEach((amt, pid) => {
         const pl = STATE.players.find(pp => pp.id === pid);
@@ -420,15 +468,13 @@ function finishHand() {
       STATE.pot = Math.max(0, STATE.pot - totalRefund);
     }
 
-    const results = evaluateHandsAndPick(alive);
-    for (const pot of pots) {
-      awardPot(pot, results);
-    }
+    const results = evaluateHands(alive);
+    for (const pot of pots) awardPot(pot, results);
 
-    STATE.pot = 0; // distributed
+    STATE.pot = 0;
   }
 
-  // Auto-remove busted
+  // remove busted
   const busted = STATE.players.filter(p => p.stack <= 0);
   if (busted.length > 0) {
     busted.forEach(p => logEvent({ event: 'player_busted', player: p }));
@@ -439,7 +485,7 @@ function finishHand() {
 
   if (STATE.players.length >= 2) {
     if (STATE.nextHandTimer) clearTimeout(STATE.nextHandTimer);
-    STATE.nextHandTimer = setTimeout(startHand, 8000);
+    STATE.nextHandTimer = setTimeout(startHand, 6000);
   }
 
   broadcastState();
@@ -461,6 +507,7 @@ function handleAction(socket, { action, amount }) {
     logEvent({ event: 'player_action', player: p, action: 'fold', amount: 0 });
     updateSidePotsPreview();
     turnRotateOrAdvance();
+    resetWatchdog('fold');
     return;
   }
 
@@ -469,12 +516,13 @@ function handleAction(socket, { action, amount }) {
       logEvent({ event: 'player_action', player: p, action: 'check', amount: 0 });
       updateSidePotsPreview();
       turnRotateOrAdvance();
+      resetWatchdog('check');
     }
     return;
   }
 
   if (action === 'call') {
-    const callAmt = Math.min(toCall, p.stack);
+    const callAmt = Math.min(Math.max(0, toCall), p.stack);
     p.stack -= callAmt;
     p.bet = (p.bet || 0) + callAmt;
     p.committed = (p.committed || 0) + callAmt;
@@ -483,14 +531,15 @@ function handleAction(socket, { action, amount }) {
     logEvent({ event: 'player_action', player: p, action: p.allIn ? 'allin_call' : 'call', amount: callAmt });
     updateSidePotsPreview();
     turnRotateOrAdvance();
+    resetWatchdog('call');
     return;
   }
 
   if (action === 'bet' || action === 'raise') {
     const minRaise = Math.max(STATE.minRaiseTo, BIG_BLIND);
-    const raiseTo = Math.max(minRaise, Number(amount || 0)); // interpret as "raise to"
+    const raiseTo = Math.max(minRaise, Number.isFinite(+amount) ? +amount : 0); // "raise to"
     const toPay = toCall + raiseTo;
-    const pay = Math.min(toPay, p.stack); // capped at stack
+    const pay = Math.min(Math.max(0, toPay), p.stack); // clamp
 
     p.stack -= pay;
     p.bet = (p.bet || 0) + pay;
@@ -511,6 +560,7 @@ function handleAction(socket, { action, amount }) {
     updateSidePotsPreview();
     STATE.currentPlayerIdx = nextActivePlayer(idx);
     broadcastState();
+    resetWatchdog('raiseOrBet');
     return;
   }
 }
@@ -527,13 +577,11 @@ function turnRotateOrAdvance() {
   const maxBet = Math.max(...STATE.players.map(p => p.bet || 0));
   const canAct = STATE.players.filter(p => p.inHand && !p.folded && !p.allIn);
 
-  // No one left who can act -> advance street
   if (canAct.length === 0) {
     advanceStage();
     return;
   }
 
-  // Only one can act
   if (canAct.length === 1) {
     const loneIdx = STATE.players.indexOf(canAct[0]);
     if ((STATE.players[loneIdx].bet || 0) === maxBet) {
@@ -545,14 +593,12 @@ function turnRotateOrAdvance() {
     return;
   }
 
-  // If someone has bet/raised and all non-all-in players matched -> advance
   const allMatched = canAct.every(p => (p.bet || 0) === maxBet);
   if (STATE.hasBetOrRaise && allMatched) {
     advanceStage();
     return;
   }
 
-  // Otherwise rotate to the next actionable player
   let nextIdx = nextActivePlayer(STATE.currentPlayerIdx);
   let hops = 0;
   while (
@@ -573,7 +619,6 @@ function turnRotateOrAdvance() {
 
   STATE.currentPlayerIdx = nextIdx;
 
-  // If no bet/raise this street and we looped back to first actor -> advance
   if (!STATE.hasBetOrRaise && STATE.currentPlayerIdx === STATE.roundFirstIdx) {
     advanceStage();
     return;
@@ -585,6 +630,7 @@ function turnRotateOrAdvance() {
 /* ------------------------------ Hard reset -------------------------------- */
 function hardReset() {
   if (STATE.nextHandTimer) { clearTimeout(STATE.nextHandTimer); STATE.nextHandTimer = null; }
+  if (STATE.watchdogTimer) { clearTimeout(STATE.watchdogTimer); STATE.watchdogTimer = null; }
   logEvent({ event: 'hard_reset', player: null });
 
   STATE.handId = 0;
@@ -610,7 +656,7 @@ function hardReset() {
 io.on('connection', (socket) => {
   socket.on('host:join', () => {
     socket.join('host');
-    if (!STATE.actionLogFile) initLogFile();
+    ensureLog();
     socket.emit('host:welcome', { ok: true });
     broadcastState();
   });
