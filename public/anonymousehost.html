@@ -2,13 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Poker Host</title>
+  <title>Poker anonymousehost</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="container">
   <div class="card">
-    <h1>Texas Hold’em — Host</h1>
+    <h1>Texas Hold’em — anonymousehost</h1>
     <p class="small">Share this URL with players: <span class="badge" id="joinUrl"></span></p>
     <div class="row" style="margin-top:12px">
       <div class="col">
@@ -50,14 +50,14 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  socket.emit('host:join');
+  socket.emit('anonymousehost:join');
 
-  const joinUrl = `${location.protocol}//${location.host}/player.html`;
+  const joinUrl = `${location.protocol}//${location.anonymousehost}/player.html`;
   document.getElementById('joinUrl').textContent = joinUrl;
 
   const el = id => document.getElementById(id);
 
-  socket.on('host:welcome', () => {});
+  socket.on('anonymousehost:welcome', () => {});
   socket.on('state:update', (s) => {
     el('handId').textContent = s.handId;
     el('stage').textContent = s.stage;
@@ -67,7 +67,7 @@
     el('minRaise').textContent = s.minRaiseTo;
     el('community').textContent = s.community.length ? s.community.join(' ') : '—';
 
-    // Render players (full info for host)
+    // Render players (full info for anonymousehost)
     const list = el('players');
     list.innerHTML = '';
     s.players.forEach((p,i) => {
@@ -98,7 +98,7 @@
       }).join('');
     }
 
-    // Allow host to remove players only between hands if desired
+    // Allow anonymousehost to remove players only between hands if desired
     const listBtns = s.players.map(p =>
       `<li>${p.name} – ${p.stack}
         ${(s.waitingForNextHand || s.inDelay) ? `<button onclick="remove('${p.id}')">Remove</button>` : ''}
@@ -108,14 +108,14 @@
   });
 
   function remove(id) {
-    socket.emit('host:removePlayer', id);
+    socket.emit('anonymousehost:removePlayer', id);
   }
 
-  document.getElementById('startBtn').onclick = () => socket.emit('host:start');
-  document.getElementById('nextHandBtn').onclick = () => socket.emit('host:nextHandNow');
+  document.getElementById('startBtn').onclick = () => socket.emit('anonymousehost:start');
+  document.getElementById('nextHandBtn').onclick = () => socket.emit('anonymousehost:nextHandNow');
   document.getElementById('endGameBtn').onclick = () => {           // NEW
     if (confirm('End the current game and clear all players?')) {
-      socket.emit('host:endGame');
+      socket.emit('anonymousehost:endGame');
     }
   };
 </script>
