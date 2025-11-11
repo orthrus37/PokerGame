@@ -701,17 +701,41 @@ io.on('connection', (socket) => {
       startHand();
     }
   });
-
+      // Replace your existing 'host:nextHandNow' handler with this:
   socket.on('host:nextHandNow', () => {
+    // kill any pending auto-next timer
+    if (STATE.nextHandTimer) {
+      clearTimeout(STATE.nextHandTimer);
+      STATE.nextHandTimer = null;
+    }
+  
+    // If we're in lobby, just start immediately (if enough players)
     if (STATE.stage === 'lobby') {
       if (STATE.players.length >= 2) {
         STATE.tableOpen = false;
-        startHand();
+        startHand();            // ⬅️ immediately deals a fresh deck & new hole cards
       }
       return;
     }
+  
+    // Fast-forward current hand to showdown, award pot, then DEAL NEW HAND NOW
     STATE.stage = 'showdown';
-    finishHand();
+    finishHand();               // settles the hand & logs it
+  
+    // finishHand() might have scheduled an auto-next; ensure it can't fire later
+    if (STATE.nextHandTimer) {
+      clearTimeout(STATE.nextHandTimer);
+      STATE.nextHandTimer = null;
+    }
+  
+    // Redeal instantly if we still have a table
+    if (STATE.players.length >= 2) {
+      startHand();              // ⬅️ fresh shuffle, new board+hole cards broadcast immediately
+    } else {
+      // not enough players; fall back to lobby state on host UI
+      // (optional, usually not needed if your hardReset handles this elsewhere)
+      // broadcastState();
+    }
   });
 
   socket.on('host:endGame', () => {
