@@ -272,7 +272,7 @@ function updateSidePotsPreview() {
 }
 
 /* --------------------------- Broadcast state ------------------------------ */
-function sanitizeForanonymousehost() {
+function sanitizeFortest123host() {
   return {
     handId: STATE.handId,
     stage: STATE.stage,
@@ -313,11 +313,11 @@ function broadcastState() {
   const safeIdx = (STATE.currentPlayerIdx >= 0 && STATE.currentPlayerIdx < STATE.players.length)
     ? STATE.currentPlayerIdx : -1;
 
-  const anonymousehostPayload = { ...sanitizeForanonymousehost(),
+  const test123hostPayload = { ...sanitizeFortest123host(),
     currentPlayerIdx: safeIdx,
     currentPlayerId: safeIdx === -1 ? null : STATE.players[safeIdx].id
   };
-  io.to('anonymousehost').emit('state:update', anonymousehostPayload);
+  io.to('test123host').emit('state:update', test123hostPayload);
 
   STATE.players.forEach((p, idx) => {
     if (p.socketId) io.to(p.socketId).emit('state:update', sanitizeForPlayer(idx));
@@ -654,10 +654,10 @@ function hardReset() {
 
 /* ------------------------------ Socket.IO --------------------------------- */
 io.on('connection', (socket) => {
-  socket.on('anonymousehost:join', () => {
-    socket.join('anonymousehost');
+  socket.on('test123host:join', () => {
+    socket.join('test123host');
     ensureLog();
-    socket.emit('anonymousehost:welcome', { ok: true });
+    socket.emit('test123host:welcome', { ok: true });
     broadcastState();
   });
 
@@ -695,14 +695,14 @@ io.on('connection', (socket) => {
 
   socket.on('player:action', (payload) => handleAction(socket, payload));
 
-  socket.on('anonymousehost:start', () => {
+  socket.on('test123host:start', () => {
     if (STATE.players.length >= 2 && !STATE.hasStarted) {
       STATE.tableOpen = false;
       startHand();
     }
   });
-      // Replace your existing 'anonymousehost:nextHandNow' handler with this:
-  socket.on('anonymousehost:nextHandNow', () => {
+      // Replace your existing 'test123host:nextHandNow' handler with this:
+  socket.on('test123host:nextHandNow', () => {
     // kill any pending auto-next timer
     if (STATE.nextHandTimer) {
       clearTimeout(STATE.nextHandTimer);
@@ -732,17 +732,17 @@ io.on('connection', (socket) => {
     if (STATE.players.length >= 2) {
       startHand();              // ⬅️ fresh shuffle, new board+hole cards broadcast immediately
     } else {
-      // not enough players; fall back to lobby state on anonymousehost UI
+      // not enough players; fall back to lobby state on test123host UI
       // (optional, usually not needed if your hardReset handles this elsewhere)
       // broadcastState();
     }
   });
 
-  socket.on('anonymousehost:endGame', () => {
+  socket.on('test123host:endGame', () => {
     hardReset();
   });
 
-  socket.on('anonymousehost:removePlayer', (playerId) => {
+  socket.on('test123host:removePlayer', (playerId) => {
     removePlayerById(playerId);
   });
 
@@ -776,6 +776,6 @@ app.get('/latest-log', (req, res) => {
 /* --------------------------------- Listen --------------------------------- */
 server.listen(PORT, () => {
   console.log(`Poker table server listening on http://0.0.0.0:${PORT}`);
-  console.log(`anonymousehost UI:   http://<server-ip>:${PORT}/anonymousehost.html`);
+  console.log(`test123host UI:   http://<server-ip>:${PORT}/test123host.html`);
   console.log(`Players:   http://<server-ip>:${PORT}/player.html`);
 });
