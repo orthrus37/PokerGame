@@ -10,6 +10,7 @@
   <div class="card">
     <h1>Texas Hold’em — test123host</h1>
     <p class="small">Share this URL with players: <span class="badge" id="joinUrl"></span></p>
+
     <div class="row" style="margin-top:12px">
       <div class="col">
         <div class="table">
@@ -18,10 +19,9 @@
           <div><span class="label">Pot</span> <span id="pot" class="badge">0</span></div>
           <div><span class="label">Dealer</span> <span id="dealer" class="badge">—</span></div>
           <div><span class="label">Acting</span> <span id="acting" class="badge">—</span></div>
-          <div><span class="label">Min Raise To</span> <span id="minRaise" class="badge">20</span></div>
+          <div><span class="label">Min Raise To</span> <span id="minRaise" class="badge">—</span></div>
           <div><span class="label">Community</span> <div id="community" class="community">—</div></div>
 
-          <!-- Pot breakdown preview -->
           <div style="margin-top:8px;">
             <span class="label">Pot Breakdown (preview)</span>
             <div id="sidePots" class="list small">—</div>
@@ -32,7 +32,9 @@
             <button id="nextHandBtn">Force Next Hand</button>
             <button id="forceStageBtn" title="Advance one street (preflop→flop→turn→river→showdown)">Force Next Stage</button>
             <button id="endGameBtn" style="background:#a00;color:#fff;">End Game (Reset)</button>
-            <div id="playerList" style="margin-top:8px;"></div>
+
+            <div id="playerList" style="margin-top:10px;"></div>
+
             <div style="margin-top:10px;">
               <a href="/latest-log" id="logLink" target="_blank" class="badge" style="text-decoration:none;">📄 Download Log CSV</a>
             </div>
@@ -47,12 +49,13 @@
     </div>
   </div>
 </div>
+
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
   socket.emit('test123host:join');
 
-  // FIX: location.test123host -> location.host
+  // Show the join URL for players
   const joinUrl = `${location.protocol}//${location.host}/player.html`;
   document.getElementById('joinUrl').textContent = joinUrl;
 
@@ -61,15 +64,15 @@
   socket.on('test123host:welcome', () => {});
 
   socket.on('state:update', (s) => {
-    el('handId').textContent = s.handId;
-    el('stage').textContent = s.stage;
-    el('pot').textContent = s.pot;
-    el('dealer').textContent = s.dealerBtn;
-    el('acting').textContent = s.currentPlayerIdx;
+    el('handId').textContent   = s.handId;
+    el('stage').textContent    = s.stage;
+    el('pot').textContent      = s.pot;
+    el('dealer').textContent   = s.dealerBtn;
+    el('acting').textContent   = s.currentPlayerIdx;
     el('minRaise').textContent = s.minRaiseTo;
-    el('community').textContent = s.community.length ? s.community.join(' ') : '—';
+    el('community').textContent = (s.community && s.community.length) ? s.community.join(' ') : '—';
 
-    // Render players (full info for host)
+    // Players (full info for host)
     const list = el('players');
     list.innerHTML = '';
     s.players.forEach((p) => {
@@ -78,12 +81,17 @@
       row.innerHTML = `
         <div>
           <div><strong>${p.name}</strong> <span class="small">[seat ${p.seat}]</span></div>
-          <div class="small">Cards: <span class="cards">${p.cards.join(' ') || '—'}</span></div>
-          <div class="small">Committed: ${p.committed} • ${p.allIn ? 'ALL-IN' : (p.inHand ? 'IN HAND' : 'OUT')}</div>
+          <div class="small">Cards: <span class="cards">${(p.cards && p.cards.length) ? p.cards.join(' ') : '—'}</span></div>
+          <div class="small">Committed: ${p.committed || 0} • ${p.allIn ? 'ALL-IN' : (p.inHand ? 'IN HAND' : 'OUT')}</div>
         </div>
         <div>
           <div class="badge">Stack: ${p.stack}</div>
-          <div class="small">Bet: ${p.bet} • ${p.folded ? 'FOLDED' : (p.inHand ? 'IN HAND' : 'OUT')}</div>
+          <div class="small">Bet: ${p.bet || 0} • ${p.folded ? 'FOLDED' : (p.inHand ? 'IN HAND' : 'OUT')}</div>
+          <div style="margin-top:4px;">
+            <input type="number" id="stack-${p.id}" placeholder="Set stack" style="width:90px;">
+            <button onclick="setPlayerStack('${p.id}')">Set</button>
+            <button onclick="removePlayer('${p.id}')">Remove</button>
+          </div>
         </div>
       `;
       list.appendChild(row);
@@ -100,27 +108,40 @@
       }).join('');
     }
 
-    // Host remove buttons only between hands if desired
-    const listBtns = s.players.map(p =>
-      `<li>${p.name} – ${p.stack}
-        ${(s.waitingForNextHand || s.inDelay) ? `<button onclick="removePlayer('${p.id}')">Remove</button>` : ''}
-      </li>`
+    // Optional mini list of players with remove between hands (kept simple)
+    const simpleList = s.players.map(p =>
+      `<li>${p.name} – ${p.stack} <button onclick="removePlayer('${p.id}')">Remove</button></li>`
     ).join('');
-    document.getElementById('playerList').innerHTML = `<ul>${listBtns}</ul>`;
+    document.getElementById('playerList').innerHTML = `<ul>${simpleList}</ul>`;
   });
 
-  function removePlayer(id) {
-    socket.emit('test123host:removePlayer', id);
-  }
-
-  document.getElementById('startBtn').onclick = () => socket.emit('test123host:start');
-  document.getElementById('nextHandBtn').onclick = () => socket.emit('test123host:nextHandNow');
+  // Host controls
+  document.getElementById('startBtn').onclick      = () => socket.emit('test123host:start');
+  document.getElementById('nextHandBtn').onclick   = () => socket.emit('test123host:nextHandNow');
   document.getElementById('forceStageBtn').onclick = () => socket.emit('test123host:forceNextStage');
-  document.getElementById('endGameBtn').onclick = () => {
+  document.getElementById('endGameBtn').onclick    = () => {
     if (confirm('End the current game and clear all players?')) {
       socket.emit('test123host:endGame');
     }
   };
+
+  // Per-player actions
+  function removePlayer(id) {
+    socket.emit('test123host:removePlayer', id);
+  }
+
+  function setPlayerStack(id) {
+    const val = parseInt(document.getElementById(`stack-${id}`).value, 10);
+    if (Number.isFinite(val) && val >= 0) {
+      socket.emit('test123host:setPlayerStack', { playerId: id, newStack: val });
+    } else {
+      alert('Enter a valid non-negative stack amount.');
+    }
+  }
+
+  // Expose helpers to global scope for inline onclick
+  window.removePlayer = removePlayer;
+  window.setPlayerStack = setPlayerStack;
 </script>
 </body>
 </html>
