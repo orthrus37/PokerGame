@@ -761,6 +761,14 @@ io.on('connection', (socket) => {
     }
   });
 
+    // === ADD: host forces just the next stage (preflop→flop→turn→river→showdown)
+  socket.on('test123host:forceNextStage', () => {
+    // cancel any pending auto-advance timer so we don't double-advance
+    if (STATE.nextHandTimer) { clearTimeout(STATE.nextHandTimer); STATE.nextHandTimer = null; }
+    forceNextStage();
+  });
+
+
   socket.on('test123host:endGame', () => {
     hardReset();
   });
