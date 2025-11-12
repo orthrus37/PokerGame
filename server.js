@@ -271,6 +271,29 @@ function updateSidePotsPreview() {
   STATE.sidePotsPreview = buildSidePotsPreview();
 }
 
+// === ADD: Force Next Stage helper ===
+function forceNextStage() {
+  logEvent({ event: 'force_next_stage', player: null });
+
+  // lobby → start a hand if possible
+  if (STATE.stage === 'lobby') {
+    if (STATE.players.length >= 2 && !STATE.hasStarted) startHand();
+    return;
+  }
+
+  // showdown → just settle (finishHand already schedules next hand)
+  if (STATE.stage === 'showdown') {
+    finishHand();
+    return;
+  }
+
+  // For betting streets: settle current bets, then move one street forward
+  // (advanceStage() already: collectBetsToPot(), deal next board cards,
+  // reset per-street state, broadcast, and reset watchdog)
+  advanceStage();
+}
+
+
 /* --------------------------- Broadcast state ------------------------------ */
 function sanitizeFortest123host() {
   return {
