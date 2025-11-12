@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /* --------------------------------- Consts -------------------------------- */
 const TABLE_MAX = 6;
-const STARTING_STACK = 2000;
+let STARTING_STACK = 2000;
 const SMALL_BLIND = 25;
 const BIG_BLIND = 50;
 
@@ -772,6 +772,18 @@ io.on('connection', (socket) => {
   socket.on('test123host:endGame', () => {
     hardReset();
   });
+
+    // Host sets a specific player's stack
+  socket.on('test123host:setPlayerStack', ({ playerId, newStack }) => {
+    const p = STATE.players.find(pl => pl.id === playerId);
+    const n = parseInt(newStack);
+    if (p && !isNaN(n) && n >= 0 && n <= 1000000) {
+      p.stack = n;
+      logEvent({ event: 'set_player_stack', player: p, action: 'set_stack', amount: n });
+      broadcastState();
+    }
+  });
+
 
   socket.on('test123host:removePlayer', (playerId) => {
     removePlayerById(playerId);
