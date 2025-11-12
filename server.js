@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* --------------------------------- Consts -------------------------------- */
-const TABLE_MAX = 6;
+const TABLE_MAX = 8;
 let STARTING_STACK = 2000;
 const SMALL_BLIND = 25;
 const BIG_BLIND = 50;
